@@ -68,10 +68,40 @@ final class AgentHomeTaskViewState {
     enum Page: Hashable {
         case pullRequests
         case usage
+        /// One pull request, in the detail view.
+        case pullRequest(GitHubPullRequestRef)
     }
 
     /// The page shown instead of the selected task, if any.
-    var page: Page?
+    var page: Page? {
+        didSet { if case .pullRequest = page {} else { pullRequestBackStack = [] } }
+    }
+
+    /// Whether the main area shows pull requests: the list or one in detail.
+    var isShowingPullRequests: Bool {
+        if case .pullRequest = page { return true }
+        return page == .pullRequests
+    }
+
+    /// Where Back goes from a pull request's detail: the pages it was opened from.
+    private(set) var pullRequestBackStack: [Page?] = []
+
+    /// Shows a pull request's detail, remembering where Back goes.
+    func showPullRequest(_ ref: GitHubPullRequestRef) {
+        if case .pullRequest(let current) = page, current == ref { return }
+        let previous = page
+        let stack = pullRequestBackStack
+        page = .pullRequest(ref)
+        pullRequestBackStack = stack + [previous]
+    }
+
+    /// Leaves the pull request detail for the page it was opened from.
+    func goBackFromPullRequest() {
+        var stack = pullRequestBackStack
+        let previous = stack.popLast() ?? nil
+        page = previous
+        pullRequestBackStack = stack
+    }
 
     /// Shows a page, or goes back to the selected task when it's already showing.
     func togglePage(_ page: Page) {

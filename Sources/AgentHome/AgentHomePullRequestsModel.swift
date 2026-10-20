@@ -100,17 +100,42 @@ final class AgentHomePullRequestsModel {
     /// Opens a pull request in its own workspace: the page in a browser on the
     /// left, a terminal in the matching project's folder on the right.
     func open(_ pullRequest: GitHubPullRequest, tabManager: TabManager) {
+        guard let url = URL(string: pullRequest.url) else { return }
+        openWorkspace(
+            pullRequestURL: url,
+            repository: pullRequest.repository,
+            number: pullRequest.number,
+            title: pullRequest.title,
+            tabManager: tabManager
+        )
+    }
+
+    /// Opens a pull request's workspace (creating it the first time) and shows
+    /// `load` in its browser, or the pull request page itself.
+    func openWorkspace(
+        pullRequestURL url: URL,
+        repository: String,
+        number: Int,
+        title pullRequestTitle: String,
+        load: URL? = nil,
+        tabManager: TabManager
+    ) {
         AgentHomeTaskViewState.shared.page = nil
-        if let existing = workspaces[pullRequest.url], tabManager.tabs.contains(where: { $0.id == existing }) {
+        let page = load ?? url
+        if let existing = workspaces[url.absoluteString], tabManager.tabs.contains(where: { $0.id == existing }) {
             tabManager.focusTab(existing)
+            if let load,
+               let workspace = tabManager.tabs.first(where: { $0.id == existing }),
+               let browser = workspace.panels.values.compactMap({ $0 as? BrowserPanel }).first {
+                _ = browser.navigate(to: load)
+            }
             return
         }
-        guard let url = URL(string: pullRequest.url) else { return }
-        let project = project(for: pullRequest)
-        let title = "\(pullRequest.repository.split(separator: "/").last.map(String.init) ?? pullRequest.repository)#\(pullRequest.number) \(pullRequest.title)"
+        let project = GitHubRepositoryMatcher.project(for: repository, in: projects, origins: origins)
+        let title = "\(repository.split(separator: "/").last.map(String.init) ?? repository)#\(number) \(pullRequestTitle)"
         let workspace = tabManager.addWorkspace(title: title, workingDirectory: project?.root, select: true)
         tabManager.focusTab(workspace.id)
-        workspaces[pullRequest.url] = workspace.id
+        workspaces[url.absoluteString] = workspace.id
         let viewer = inbox?.viewer
         Task {
             let profileID = await Self.gitHubProfileID(viewer: viewer)
@@ -119,16 +144,21 @@ final class AgentHomePullRequestsModel {
                       from: terminalId,
                       orientation: .horizontal,
                       insertFirst: true,
-                      url: url,
+                      url: page,
                       preferredProfileID: profileID,
                       focus: true,
                       initialDividerPosition: 0.64
                   ) != nil
             else {
-                NSWorkspace.shared.open(url)
+                NSWorkspace.shared.open(page)
                 return
             }
         }
+    }
+
+    /// The T3 project whose folder holds a repository.
+    func project(forRepository repository: String) -> T3CodeStateReader.Project? {
+        GitHubRepositoryMatcher.project(for: repository, in: projects, origins: origins)
     }
 
     /// The browser profile signed in to GitHub, so pull requests open signed in.
@@ -162,9 +192,13 @@ final class AgentHomePullRequestsModel {
 
     /// The prompt for "Review with agent".
     static func reviewPrompt(for pullRequest: GitHubPullRequest) -> String {
+        reviewPrompt(url: pullRequest.url)
+    }
+
+    static func reviewPrompt(url: String) -> String {
         String(
             localized: "agentHome.prs.reviewPrompt",
-            defaultValue: "Review \(pullRequest.url). Check out the branch, read the change and run the relevant tests. Then tell me what it does, anything that looks wrong or risky, and whether you'd approve it. Don't post anything on GitHub."
+            defaultValue: "Review \(url). Check out the branch, read the change and run the relevant tests. Then tell me what it does, anything that looks wrong or risky, and whether you'd approve it. Don't post anything on GitHub."
         )
     }
 }

@@ -140,7 +140,11 @@ struct AgentHomePullRequestsView: View {
                     pullRequest: pullRequest,
                     kind: kind,
                     linkedThread: model.linkedThreads[pullRequest.key],
-                    onOpen: { model.open(pullRequest, tabManager: tabManager) },
+                    onOpen: {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            AgentHomeTaskViewState.shared.showPullRequest(GitHubPullRequestRef(repository: pullRequest.repository, number: pullRequest.number))
+                        }
+                    },
                     onOpenInBrowser: { model.openInBrowser(pullRequest) },
                     onReviewWithAgent: { onReviewWithAgent(pullRequest) },
                     onOpenThread: onOpenThread

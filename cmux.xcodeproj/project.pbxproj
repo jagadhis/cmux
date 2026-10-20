@@ -142,6 +142,10 @@
 		408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */; };
 		C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */; };
 		80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */; };
+		A90266FD8FC17DAB00726F02 /* AgentHomeHTMLView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891D879B16EE56B705ECD607 /* AgentHomeHTMLView.swift */; };
+		4B8B2CD4A1DCA68F06F20076 /* AgentHomePullRequestCodeTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B18AB8408FC3ACF1D978743 /* AgentHomePullRequestCodeTab.swift */; };
+		A1B5A67A2B0E1BDE80535850 /* AgentHomePullRequestDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA543E068F60CA0C9B163D8D /* AgentHomePullRequestDetailModel.swift */; };
+		DBB2411783BA0BEE1E81C3C2 /* AgentHomePullRequestDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6EB0F816CA05B5401578BA6 /* AgentHomePullRequestDetailView.swift */; };
 		BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */; };
 		E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
@@ -4946,6 +4950,10 @@
 		B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedIndex.swift; sourceTree = "<group>"; };
 		1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedModel.swift; sourceTree = "<group>"; };
 		FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFirstLaunchDefaults.swift; sourceTree = "<group>"; };
+		891D879B16EE56B705ECD607 /* AgentHomeHTMLView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeHTMLView.swift; sourceTree = "<group>"; };
+		5B18AB8408FC3ACF1D978743 /* AgentHomePullRequestCodeTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestCodeTab.swift; sourceTree = "<group>"; };
+		DA543E068F60CA0C9B163D8D /* AgentHomePullRequestDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestDetailModel.swift; sourceTree = "<group>"; };
+		A6EB0F816CA05B5401578BA6 /* AgentHomePullRequestDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestDetailView.swift; sourceTree = "<group>"; };
 		CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsModel.swift; sourceTree = "<group>"; };
 		20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsView.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
@@ -12476,6 +12484,10 @@
 				D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */,
 				044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */,
 				78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */,
+				891D879B16EE56B705ECD607 /* AgentHomeHTMLView.swift */,
+				5B18AB8408FC3ACF1D978743 /* AgentHomePullRequestCodeTab.swift */,
+				A6EB0F816CA05B5401578BA6 /* AgentHomePullRequestDetailView.swift */,
+				DA543E068F60CA0C9B163D8D /* AgentHomePullRequestDetailModel.swift */,
 				530C3FA26E28B8B3637EA884 /* AgentHomeT3TaskPanels.swift */,
 				890A00E2DC78A9FAAC38C1C8 /* AgentHomeT3PullRequestActions.swift */,
 				FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */,
@@ -15032,6 +15044,10 @@
 				408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */,
 				C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */,
 				80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */,
+				A90266FD8FC17DAB00726F02 /* AgentHomeHTMLView.swift in Sources */,
+				4B8B2CD4A1DCA68F06F20076 /* AgentHomePullRequestCodeTab.swift in Sources */,
+				A1B5A67A2B0E1BDE80535850 /* AgentHomePullRequestDetailModel.swift in Sources */,
+				DBB2411783BA0BEE1E81C3C2 /* AgentHomePullRequestDetailView.swift in Sources */,
 				BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */,
 				E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,

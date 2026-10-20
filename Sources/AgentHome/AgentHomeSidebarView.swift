@@ -40,7 +40,7 @@ struct AgentHomeSidebarView: View {
                     }
                 }
                 AgentHomePullRequestsSidebarRow(
-                    isSelected: viewState.page == .pullRequests,
+                    isSelected: viewState.isShowingPullRequests,
                     reviewCount: pullRequests.inbox?.toReview.count ?? 0,
                     actionableCount: pullRequests.inbox?.mine.filter { $0.nextStep.isActionable }.count ?? 0
                 ) {

@@ -165,7 +165,12 @@ struct AgentHomeT3LinkedPullRequests: View {
                                 entry: entry,
                                 isPending: actions.pending.contains(entry.id),
                                 outcome: actions.outcomes[entry.id],
-                                onOpen: { actions.open(entry.pullRequest, inWorkspace: workspaceId, tabManager: tabManager) },
+                                onOpen: {
+                                    withAnimation(.easeOut(duration: 0.16)) {
+                                        AgentHomeTaskViewState.shared.showPullRequest(GitHubPullRequestRef(repository: entry.pullRequest.repository, number: entry.pullRequest.number))
+                                    }
+                                },
+                                onOpenBeside: { actions.open(entry.pullRequest, inWorkspace: workspaceId, tabManager: tabManager) },
                                 onStep: { step in perform(step, on: entry.pullRequest) },
                                 onOpenThread: { onOpenThread(entry.threadId) }
                             )
@@ -224,6 +229,8 @@ private struct AgentHomeT3PullRequestRow: View {
     let isPending: Bool
     let outcome: AgentHomeT3PullRequestActions.Outcome?
     let onOpen: () -> Void
+    /// Opens the GitHub page in a browser beside the task's terminal.
+    let onOpenBeside: () -> Void
     let onStep: (T3PullRequestNextStep) -> Void
     let onOpenThread: () -> Void
 
@@ -279,7 +286,8 @@ private struct AgentHomeT3PullRequestRow: View {
         .onHover { isHovered = $0 }
         .help(helpText)
         .contextMenu {
-            Button(String(localized: "agentHome.t3.pr.openBeside", defaultValue: "Open beside the terminal"), action: onOpen)
+            Button(String(localized: "agentHome.t3.pr.openDetail", defaultValue: "Open pull request"), action: onOpen)
+            Button(String(localized: "agentHome.t3.pr.openBeside", defaultValue: "Open on GitHub beside the terminal"), action: onOpenBeside)
             if let url = pullRequest.url {
                 Button(String(localized: "agentHome.prs.openInBrowser", defaultValue: "Open in your browser")) { NSWorkspace.shared.open(url) }
                 Button(String(localized: "agentHome.t3.pr.copyLink", defaultValue: "Copy link")) {

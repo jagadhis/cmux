@@ -70,7 +70,11 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             }
             ZStack {
                 content
-                if page == .usage {
+                if case .pullRequest(let ref) = page {
+                    AgentHomePullRequestDetailView(ref: ref, tabManager: tabManager)
+                        .id(ref)
+                        .transition(.opacity)
+                } else if page == .usage {
                     AgentHomeUsageView(tabManager: tabManager)
                         .transition(.opacity)
                 } else if page == .pullRequests {
