@@ -2,6 +2,7 @@ import AppKit
 import CmuxAgentHome
 import Foundation
 import Observation
+import WebKit
 
 /// The user's GitHub pull requests in Agent Home: the ones waiting on their
 /// review and the ones they opened.
@@ -110,19 +111,48 @@ final class AgentHomePullRequestsModel {
         let workspace = tabManager.addWorkspace(title: title, workingDirectory: project?.root, select: true)
         tabManager.focusTab(workspace.id)
         workspaces[pullRequest.url] = workspace.id
-        guard let terminalId = workspace.focusedPanelId ?? workspace.panels.keys.first,
-              workspace.newBrowserSplit(
-                  from: terminalId,
-                  orientation: .horizontal,
-                  insertFirst: true,
-                  url: url,
-                  focus: true,
-                  initialDividerPosition: 0.64
-              ) != nil
-        else {
-            NSWorkspace.shared.open(url)
-            return
+        let viewer = inbox?.viewer
+        Task {
+            let profileID = await Self.gitHubProfileID(viewer: viewer)
+            guard let terminalId = workspace.focusedPanelId ?? workspace.panels.keys.first,
+                  workspace.newBrowserSplit(
+                      from: terminalId,
+                      orientation: .horizontal,
+                      insertFirst: true,
+                      url: url,
+                      preferredProfileID: profileID,
+                      focus: true,
+                      initialDividerPosition: 0.64
+                  ) != nil
+            else {
+                NSWorkspace.shared.open(url)
+                return
+            }
         }
+    }
+
+    /// The browser profile signed in to GitHub, so pull requests open signed in.
+    ///
+    /// Each cmux browser profile keeps its own cookies, and Import Browser Data
+    /// can bring a GitHub login into a profile other than Default. GitHub marks
+    /// a signed-in browser with `logged_in=yes` and the login in `dotcom_user`.
+    /// Prefers a profile signed in as `viewer` (the `gh` account), then the
+    /// last used profile, then Default; `nil` (Default) when none is signed in.
+    static func gitHubProfileID(viewer: String?) async -> UUID? {
+        let store = BrowserProfileStore.shared
+        var candidates = [store.lastUsedProfileID, store.builtInDefaultProfileID]
+        candidates += store.profiles.map(\.id).filter { !candidates.contains($0) }
+        var signedIn: [(id: UUID, user: String?)] = []
+        for id in candidates {
+            let cookies = await store.websiteDataStore(for: id).httpCookieStore.allCookies()
+                .filter { $0.domain.hasSuffix("github.com") }
+            guard cookies.contains(where: { $0.name == "logged_in" && $0.value == "yes" }) else { continue }
+            signedIn.append((id, cookies.first { $0.name == "dotcom_user" }?.value))
+        }
+        if let viewer, let match = signedIn.first(where: { $0.user?.caseInsensitiveCompare(viewer) == .orderedSame }) {
+            return match.id
+        }
+        return signedIn.first?.id
     }
 
     /// Opens a pull request in the default browser.
