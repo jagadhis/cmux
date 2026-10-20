@@ -239,6 +239,42 @@ import Testing
         ))
     }
 
+    @Test func readsTheFilesEachThreadWrote() throws {
+        let url = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        let sql = """
+            INSERT INTO orchestration_v2_projection_turn_items VALUES
+              ('f1', 't1', 10, 'file_change', 'completed', '2026-10-19T08:00:00Z',
+               '{"fileName":"/Users/jags/workspace/work-memory/items/BD-191/current.md","completedAt":"2026-10-19T08:00:00Z"}'),
+              ('f2', 't1', 11, 'file_change', 'completed', '2026-10-19T09:00:00Z',
+               '{"fileName":"/Users/jags/workspace/work-memory/items/BD-191/current.md","completedAt":"2026-10-19T09:00:00Z"}'),
+              ('f3', 't1', 12, 'file_change', 'completed', '2026-10-19T08:30:00Z', '{"fileName":"src/relay.ts"}'),
+              ('f4', 't1', 13, 'file_change', 'failed', '2026-10-19T10:00:00Z', '{"fileName":"/tmp/failed.md"}'),
+              ('f5', 't9', 1, 'file_change', 'completed', '2026-10-19T08:00:00Z', '{"fileName":"notes.md"}'),
+              ('f6', 't8', 1, 'file_change', 'completed', '2026-10-19T08:00:00Z', '{"fileName":"/tmp/not-asked.md"}');
+            """
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        let files = try T3CodeStateReader(databaseURL: url).sessionFiles(threadIds: ["t1", "t9", "t2"])
+
+        #expect(Set(files.keys) == ["t1", "t9"])
+        let voice = try #require(files["t1"])
+        #expect(voice.map(\.path) == [
+            "/Users/jags/workspace/work-memory/items/BD-191/current.md",
+            // Relative names resolve against the thread's worktree.
+            "/Users/jags/projects/oorva-app/src/relay.ts",
+        ])
+        #expect(voice[0].editCount == 2)
+        #expect(voice[0].lastEditedAt == T3CodeStateReader.date("2026-10-19T09:00:00Z"))
+        #expect(voice[0].kind == .workingMemory)
+        #expect(voice[1].kind == .file)
+        // Without a worktree, the project's folder.
+        #expect(files["t9"]?.map(\.path) == ["/Users/jags/projects/oorva-app/notes.md"])
+    }
+
     @Test func missingDatabaseThrows() {
         let reader = T3CodeStateReader(databaseURL: URL(fileURLWithPath: "/nonexistent/statev2.sqlite"))
         #expect(throws: T3CodeStateReader.ReadError.self) { try reader.activeThreads() }

@@ -148,6 +148,7 @@
 		DBB2411783BA0BEE1E81C3C2 /* AgentHomePullRequestDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6EB0F816CA05B5401578BA6 /* AgentHomePullRequestDetailView.swift */; };
 		BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */; };
 		E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */; };
+		B7D1E5A2C3F40A1B9E6D2C41 /* AgentHomeSessionFilesCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8E2F6B3D4051B2CAF7E3D52 /* AgentHomeSessionFilesCard.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
 		C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */ = {isa = PBXBuildFile; fileRef = 044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */; };
@@ -4956,6 +4957,7 @@
 		A6EB0F816CA05B5401578BA6 /* AgentHomePullRequestDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestDetailView.swift; sourceTree = "<group>"; };
 		CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsModel.swift; sourceTree = "<group>"; };
 		20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsView.swift; sourceTree = "<group>"; };
+		C8E2F6B3D4051B2CAF7E3D52 /* AgentHomeSessionFilesCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSessionFilesCard.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
 		044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3Model.swift; sourceTree = "<group>"; };
@@ -12479,6 +12481,7 @@
 				30AA2D44945B6C4A24A6D837 /* TerminalController+BrowserEmulation.swift */,
 				FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */,
 				30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */,
+				C8E2F6B3D4051B2CAF7E3D52 /* AgentHomeSessionFilesCard.swift */,
 				B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */,
 				1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */,
 				D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */,
@@ -15050,6 +15053,7 @@
 				DBB2411783BA0BEE1E81C3C2 /* AgentHomePullRequestDetailView.swift in Sources */,
 				BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */,
 				E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */,
+				B7D1E5A2C3F40A1B9E6D2C41 /* AgentHomeSessionFilesCard.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
 				C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */,

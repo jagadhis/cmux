@@ -150,6 +150,9 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             send: { agent, text in
                 guard let panelId = AgentHomeSnapshotBuilder.panelId(forAgentId: agent.id) else { return }
                 FeedJumpResolver.sendText(workspaceId: task.id.uuidString, surfaceId: panelId.uuidString, text: text)
+            },
+            openFile: { path in
+                AgentHomeSessionFileOpener.open(path, inWorkspace: task.id, tabManager: tabManager)
             }
         )
     }
@@ -160,6 +163,7 @@ struct AgentHomeOverviewActions {
     var reply: (AgentHomePermissionRequest, WorkstreamPermissionMode) -> Void
     var openTerminal: (AgentHomeAgent) -> Void
     var send: (AgentHomeAgent, String) -> Void
+    var openFile: (String) -> Void
 }
 
 // MARK: - Header
@@ -335,8 +339,13 @@ private struct AgentHomeT3Overview: View {
     let onOpenThread: (String) -> Void
     let onStartChat: (String) -> Void
 
+    @State private var filesByThread: [String: [AgentSessionFile]] = [:]
+    @State private var filesScope: FilesScope = .session
+
     private let t3Model = AgentHomeT3Model.shared
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+
+    enum FilesScope: Hashable { case session, task }
 
     var body: some View {
         let sessions = task.allThreads
@@ -360,11 +369,13 @@ private struct AgentHomeT3Overview: View {
                                 AgentHomeT3SessionCard(
                                     thread: thread,
                                     role: role(of: thread),
-                                    isShown: thread.id == shown.id
+                                    isShown: thread.id == shown.id,
+                                    files: filesByThread[thread.id] ?? []
                                 ) { onOpen(thread) }
                             }
                         }
                     }
+                    sessionFiles(shown: shown, sessionCount: sessions.count)
                     AgentHomeT3RelationshipsCard(
                         thread: shown,
                         task: task,
@@ -388,6 +399,50 @@ private struct AgentHomeT3Overview: View {
         .scrollIndicators(.never)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
+        .task(id: sessions.map(\.id)) {
+            await loadFiles(threadIds: sessions.map(\.id))
+        }
+    }
+
+    /// The files the shown thread wrote, or every session in the task.
+    @ViewBuilder
+    private func sessionFiles(shown: T3Thread, sessionCount: Int) -> some View {
+        let isTask = filesScope == .task && sessionCount > 1
+        let files = isTask
+            ? AgentSessionFile.merged(task.allThreads.map { filesByThread[$0.id] ?? [] })
+            : filesByThread[shown.id] ?? []
+        let root = isTask ? (task.thread.worktreePath ?? task.thread.projectRoot) : (shown.worktreePath ?? shown.projectRoot)
+        AgentHomeSessionFilesCard(
+            title: isTask
+                ? String(localized: "agentHome.sessionFiles.taskTitle", defaultValue: "Files this task wrote")
+                : String(localized: "agentHome.sessionFiles.sessionTitle", defaultValue: "Files this session wrote"),
+            files: files,
+            root: root,
+            emptyText: String(localized: "agentHome.sessionFiles.empty", defaultValue: "Nothing written yet. Files and working-memory notes the agent edits show up here as it works."),
+            onOpen: { file in AgentHomeSessionFileOpener.open(file.path, inWorkspace: workspaceId, tabManager: tabManager) }
+        ) {
+            if sessionCount > 1 {
+                Picker("", selection: $filesScope) {
+                    Text(String(localized: "agentHome.sessionFiles.scope.session", defaultValue: "This session")).tag(FilesScope.session)
+                    Text(String(localized: "agentHome.sessionFiles.scope.task", defaultValue: "Whole task")).tag(FilesScope.task)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            }
+        }
+    }
+
+    /// Reads the files each session wrote, then again every few seconds while the overview is open.
+    private func loadFiles(threadIds: [String]) async {
+        while !Task.isCancelled {
+            let read = await Task.detached(priority: .utility) {
+                try? T3CodeStateReader().sessionFiles(threadIds: threadIds)
+            }.value
+            if let read, read != filesByThread { filesByThread = read }
+            try? await Task.sleep(for: .seconds(3))
+        }
     }
 
     private func role(of thread: T3Thread) -> AgentHomeT3SessionCard.Role {
@@ -402,6 +457,8 @@ private struct AgentHomeT3SessionCard: View {
     let thread: T3Thread
     let role: Role
     let isShown: Bool
+    /// The files the session wrote.
+    var files: [AgentSessionFile] = []
     let onOpen: () -> Void
 
     @State private var isHovered = false
@@ -423,6 +480,7 @@ private struct AgentHomeT3SessionCard: View {
                         AgentHomeStatePill(state: status == .needsYou ? .needsYou : status == .running ? .running : .idle)
                     }
                 }
+                if !files.isEmpty { filesSummary }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -439,6 +497,36 @@ private struct AgentHomeT3SessionCard: View {
     }
 
     private var kind: AgentHomeAgentKind { thread.agentKind }
+
+    /// "2 memory notes · 5 files", with the latest working-memory note it wrote.
+    private var filesSummary: some View {
+        let memory = files.filter { $0.kind == .workingMemory }
+        let others = files.count - memory.count
+        return HStack(spacing: 5) {
+            if let latest = memory.first {
+                Image(systemName: "brain").foregroundStyle(Color(red: 0.62, green: 0.45, blue: 0.95))
+                Text(memory.count == 1
+                    ? String(localized: "agentHome.sessionFiles.oneMemoryNote", defaultValue: "1 memory note")
+                    : String(localized: "agentHome.sessionFiles.memoryNotes", defaultValue: "\(memory.count) memory notes"))
+                Text(verbatim: "·").foregroundStyle(.tertiary)
+                Text((latest.path as NSString).lastPathComponent)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(latest.path)
+            }
+            if others > 0 {
+                if !memory.isEmpty { Text(verbatim: "·").foregroundStyle(.tertiary) }
+                Image(systemName: "doc.text")
+                Text(others == 1
+                    ? String(localized: "agentHome.sessionFiles.oneFile", defaultValue: "1 file")
+                    : String(localized: "agentHome.sessionFiles.fileCount", defaultValue: "\(others) files"))
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(.leading, 40)
+    }
 
     private var subtitle: String {
         var parts: [String] = switch role {
@@ -490,6 +578,13 @@ private struct AgentHomeTaskOverview: View {
                         if let pr = task.input.pullRequest {
                             AgentHomePullRequestCard(pullRequest: pr, branch: task.input.branch)
                         }
+                        AgentHomeSessionFilesCard(
+                            title: String(localized: "agentHome.sessionFiles.sessionsTitle", defaultValue: "Written this session"),
+                            files: AgentSessionFile.merged(task.input.agents.map(\.editedFiles)),
+                            root: task.input.directory,
+                            emptyText: String(localized: "agentHome.sessionFiles.agentsEmpty", defaultValue: "Files and working-memory notes the agents edit show up here."),
+                            onOpen: { actions.openFile($0.path) }
+                        )
                         AgentHomeChangesCard(files: changedFiles)
                     }
                     .padding(.bottom, 90)

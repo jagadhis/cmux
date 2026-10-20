@@ -68,7 +68,8 @@ enum AgentHomeSnapshotBuilder {
                     currentActivity: state == .idle ? nil : signals?.currentActivity,
                     lastSummary: signals?.lastSummary,
                     plan: signals?.plan ?? [],
-                    pendingPermission: signals?.pendingPermission
+                    pendingPermission: signals?.pendingPermission,
+                    editedFiles: signals?.editedFiles.files ?? []
                 )
             }
         }

@@ -12,6 +12,8 @@ struct AgentHomeFeedSignals: Equatable {
     var sessionTitle: String?
     var startedAt: Date?
     var lastActivityAt: Date?
+    /// The files the current session wrote, working-memory notes included.
+    var editedFiles = AgentSessionFileLog()
 }
 
 /// Folds Feed items into per-terminal signals.
@@ -59,6 +61,12 @@ enum AgentHomeFeedIndex {
                     toolName: toolName,
                     toolInputJSON: toolInputJSON,
                     workingDirectory: item.cwd
+                )
+                signals.editedFiles.record(
+                    toolName: toolName,
+                    toolInputJSON: toolInputJSON,
+                    workingDirectory: item.cwd,
+                    at: item.createdAt
                 )
             case let .todos(todos):
                 signals.plan = todos.map { todo in

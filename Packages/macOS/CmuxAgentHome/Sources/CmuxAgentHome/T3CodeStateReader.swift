@@ -174,6 +174,45 @@ public struct T3CodeStateReader: Sendable {
         return Dictionary(rows, uniquingKeysWith: { _, newer in newer })
     }
 
+    /// The files each thread's agent wrote, from T3's completed file changes.
+    ///
+    /// These include files outside the project, such as working-memory notes,
+    /// which the project's git status doesn't show. Relative paths resolve
+    /// against the thread's worktree, or its project's folder.
+    ///
+    /// - Parameter threadIds: The threads to read.
+    /// - Returns: Each thread's files, most recently edited first, by thread id.
+    ///   Threads that wrote nothing are absent.
+    /// - Throws: ``ReadError`` when the database can't be opened or queried.
+    public func sessionFiles(threadIds: [String]) throws -> [String: [AgentSessionFile]] {
+        guard !threadIds.isEmpty else { return [:] }
+        let db = try open()
+        defer { sqlite3_close_v2(db) }
+        let ids = Array(Set(threadIds)).sorted()
+        let list = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+        let sql = """
+            SELECT i.thread_id, json_extract(i.payload_json, '$.fileName'), count(*),
+                   max(coalesce(json_extract(i.payload_json, '$.completedAt'), i.updated_at)),
+                   coalesce(json_extract(t.payload_json, '$.worktreePath'), p.workspace_root)
+            FROM orchestration_v2_projection_turn_items i
+            JOIN orchestration_v2_projection_threads t ON t.thread_id = i.thread_id
+            LEFT JOIN projection_projects p ON p.project_id = t.project_id
+            WHERE i.thread_id IN (\(list))
+              AND i.type = 'file_change' AND i.status = 'completed'
+              AND coalesce(json_extract(i.payload_json, '$.fileName'), '') <> ''
+            GROUP BY i.thread_id, json_extract(i.payload_json, '$.fileName')
+            """
+        let rows: [(String, AgentSessionFile)?] = try query(db, sql, bind: ids) { row in
+            guard let threadId = row.text(0),
+                  let path = AgentSessionFile.absolutePath(row.text(1) ?? "", relativeTo: row.text(4))
+            else { return nil }
+            return (threadId, AgentSessionFile(path: path, editCount: row.int(2), lastEditedAt: Self.date(row.text(3))))
+        }
+        // A relative and an absolute name can resolve to the same file.
+        return Dictionary(grouping: rows.compactMap { $0 }, by: \.0)
+            .mapValues { AgentSessionFile.merged([$0.map(\.1)]) }
+    }
+
     /// Reads thread launches (handoffs) added since the index last looked.
     ///
     /// The first call reads every launch call in T3's history (a second or

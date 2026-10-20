@@ -120,6 +120,8 @@ public struct AgentHomeAgent: Identifiable, Hashable, Sendable {
     public var plan: [AgentHomePlanStep]
     /// The permission prompt the agent is blocked on, if any.
     public var pendingPermission: AgentHomePermissionRequest?
+    /// The files the session wrote, most recently edited first.
+    public var editedFiles: [AgentSessionFile]
 
     /// Creates an agent card model.
     ///
@@ -137,6 +139,7 @@ public struct AgentHomeAgent: Identifiable, Hashable, Sendable {
     ///   - lastSummary: The agent's last reply.
     ///   - plan: The agent's plan.
     ///   - pendingPermission: The permission prompt the agent is blocked on.
+    ///   - editedFiles: The files the session wrote.
     public init(
         id: String,
         kind: AgentHomeAgentKind,
@@ -150,7 +153,8 @@ public struct AgentHomeAgent: Identifiable, Hashable, Sendable {
         currentActivity: String? = nil,
         lastSummary: String? = nil,
         plan: [AgentHomePlanStep] = [],
-        pendingPermission: AgentHomePermissionRequest? = nil
+        pendingPermission: AgentHomePermissionRequest? = nil,
+        editedFiles: [AgentSessionFile] = []
     ) {
         self.id = id
         self.kind = kind
@@ -165,6 +169,7 @@ public struct AgentHomeAgent: Identifiable, Hashable, Sendable {
         self.lastSummary = lastSummary
         self.plan = plan
         self.pendingPermission = pendingPermission
+        self.editedFiles = editedFiles
     }
 
     /// The plan step the agent is on: the first step that isn't completed.
