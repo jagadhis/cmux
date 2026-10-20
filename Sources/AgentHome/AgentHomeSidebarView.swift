@@ -10,6 +10,9 @@ struct AgentHomeSidebarView: View {
 
     /// Projects whose T3 tasks are all shown, keyed by group id or T3 project id.
     @State private var expandedT3Lists: Set<String> = []
+    /// Collapsed T3-only projects (cmux projects use the group's own collapsed flag).
+    @AppStorage("agentHomeCollapsedT3Projects") private var collapsedT3ProjectsRaw = ""
+    @AppStorage("agentHomeT3SectionCollapsed") private var isT3SectionCollapsed = false
 
     private let t3Model = AgentHomeT3Model.shared
     private static let collapsedT3Count = 3
@@ -33,16 +36,25 @@ struct AgentHomeSidebarView: View {
                         title: String(localized: "agentHome.sidebar.projects", defaultValue: "Projects")
                     )
                     ForEach(snapshot.projects) { project in
+                        let isCollapsed = collapsedGroupIds.contains(project.id)
                         AgentHomeProjectRow(
                             project: project,
-                            isSelected: project.home.map { $0.id == tabManager.selectedTabId } ?? false
-                        ) {
-                            if let home = project.home { tabManager.focusTab(home.id) }
+                            isSelected: project.home.map { $0.id == tabManager.selectedTabId } ?? false,
+                            isCollapsed: isCollapsed,
+                            hiddenT3Count: (t3.byGroup[project.id] ?? []).count,
+                            onOpen: { if let home = project.home { tabManager.focusTab(home.id) } },
+                            onToggleCollapsed: {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    tabManager.toggleWorkspaceGroupCollapsed(groupId: project.id)
+                                }
+                            }
+                        )
+                        if !isCollapsed {
+                            ForEach(project.tasks) { task in
+                                taskRow(task, indented: true, shortcut: shortcutNumbers[task.id])
+                            }
+                            t3Rows(t3.byGroup[project.id] ?? [], listKey: project.id.uuidString, indented: true)
                         }
-                        ForEach(project.tasks) { task in
-                            taskRow(task, indented: true, shortcut: shortcutNumbers[task.id])
-                        }
-                        t3Rows(t3.byGroup[project.id] ?? [], listKey: project.id.uuidString, indented: true)
                     }
                 }
 
@@ -58,12 +70,26 @@ struct AgentHomeSidebarView: View {
                 }
 
                 if !t3.t3OnlyProjects.isEmpty {
-                    AgentHomeSectionLabel(
-                        title: String(localized: "agentHome.sidebar.fromT3", defaultValue: "From T3 Code")
-                    )
-                    ForEach(t3.t3OnlyProjects) { project in
-                        AgentHomeT3ProjectRow(name: project.name, taskCount: project.tasks.count)
-                        t3Rows(project.tasks, listKey: project.id, indented: true)
+                    AgentHomeCollapsibleSectionLabel(
+                        title: String(localized: "agentHome.sidebar.fromT3", defaultValue: "From T3 Code"),
+                        isCollapsed: isT3SectionCollapsed
+                    ) {
+                        withAnimation(.easeOut(duration: 0.2)) { isT3SectionCollapsed.toggle() }
+                    }
+                    if !isT3SectionCollapsed {
+                        ForEach(t3.t3OnlyProjects) { project in
+                            let isCollapsed = collapsedT3Projects.contains(project.id)
+                            AgentHomeT3ProjectRow(
+                                name: project.name,
+                                taskCount: project.tasks.count,
+                                isCollapsed: isCollapsed
+                            ) {
+                                withAnimation(.easeOut(duration: 0.2)) { toggleT3Project(project.id) }
+                            }
+                            if !isCollapsed {
+                                t3Rows(project.tasks, listKey: project.id, indented: true)
+                            }
+                        }
                     }
                 }
 
@@ -77,6 +103,20 @@ struct AgentHomeSidebarView: View {
         }
         .scrollIndicators(.never)
         .onAppear { t3Model.startIfNeeded() }
+    }
+
+    private var collapsedGroupIds: Set<UUID> {
+        Set(tabManager.workspaceGroups.filter(\.isCollapsed).map(\.id))
+    }
+
+    private var collapsedT3Projects: Set<String> {
+        Set(collapsedT3ProjectsRaw.split(separator: "\n").map(String.init))
+    }
+
+    private func toggleT3Project(_ id: String) {
+        var ids = collapsedT3Projects
+        if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+        collapsedT3ProjectsRaw = ids.sorted().joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -195,28 +235,102 @@ private struct AgentHomeFilterRow: View {
 private struct AgentHomeProjectRow: View {
     let project: AgentHomeProject
     let isSelected: Bool
+    let isCollapsed: Bool
+    /// Unopened T3 tasks under this project, counted while it's collapsed.
+    let hiddenT3Count: Int
+    let onOpen: () -> Void
+    let onToggleCollapsed: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onOpen) {
+                HStack(spacing: 9) {
+                    AgentHomeProjectBadge(name: project.input.name, colorHex: project.input.colorHex)
+                    Text(project.input.name)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    trailing
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(AgentHomeRowButtonStyle())
+            .disabled(project.home == nil)
+
+            AgentHomeDisclosureChevron(isCollapsed: isCollapsed, action: onToggleCollapsed)
+        }
+        .agentHomeRowChrome(isSelected: isSelected)
+    }
+
+    /// Expanded: the home's live status, else the task count. Collapsed: the
+    /// most urgent status in the whole project, so a hidden task that needs
+    /// you still shows, else the count of everything folded away.
+    @ViewBuilder private var trailing: some View {
+        let status = isCollapsed ? project.rollupStatus : project.home?.status
+        if let status, status == .needsYou || status == .running {
+            AgentHomeStatusDot(status: status)
+        } else {
+            let count = project.tasks.count + (isCollapsed ? hiddenT3Count : 0)
+            if count > 0 {
+                Text(count, format: .number)
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// The chevron that folds a project or section: up while open, down while folded.
+struct AgentHomeDisclosureChevron: View {
+    let isCollapsed: Bool
     let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
-                AgentHomeProjectBadge(name: project.input.name, colorHex: project.input.colorHex)
-                Text(project.input.name)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let home = project.home, home.status == .needsYou || home.status == .running {
-                    AgentHomeStatusDot(status: home.status)
-                } else if !project.tasks.isEmpty {
-                    Text(project.tasks.count, format: .number)
-                        .font(.system(size: 11.5).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .agentHomeRowChrome(isSelected: isSelected)
+            Image(systemName: "chevron.up")
+                .font(.system(size: 9.5, weight: .semibold))
+                .rotationEffect(.degrees(isCollapsed ? 180 : 0))
+                .foregroundStyle(isHovered ? .secondary : .tertiary)
+                .frame(width: 20, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
         }
-        .buttonStyle(AgentHomeRowButtonStyle())
-        .disabled(project.home == nil)
+        .buttonStyle(.plain)
+        .padding(.leading, 4)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.18), value: isCollapsed)
+        .help(isCollapsed
+            ? String(localized: "agentHome.sidebar.expand", defaultValue: "Show tasks")
+            : String(localized: "agentHome.sidebar.collapse", defaultValue: "Hide tasks"))
+        .accessibilityLabel(Text(isCollapsed
+            ? String(localized: "agentHome.sidebar.expand", defaultValue: "Show tasks")
+            : String(localized: "agentHome.sidebar.collapse", defaultValue: "Hide tasks")))
+    }
+}
+
+/// A section label with a chevron that folds the whole section.
+struct AgentHomeCollapsibleSectionLabel: View {
+    let title: String
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 4)
+            AgentHomeDisclosureChevron(isCollapsed: isCollapsed, action: onToggle)
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 9)
+        .padding(.top, 12)
+        .padding(.bottom, 1)
     }
 }
 

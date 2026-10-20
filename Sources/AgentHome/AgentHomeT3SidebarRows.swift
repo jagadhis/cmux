@@ -83,19 +83,28 @@ struct AgentHomeT3MoreRow: View {
 struct AgentHomeT3ProjectRow: View {
     let name: String
     let taskCount: Int
+    let isCollapsed: Bool
+    let onToggleCollapsed: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
-            AgentHomeProjectBadge(name: name, colorHex: nil)
-                .opacity(0.55)
-            Text(name)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Text(taskCount, format: .number)
-                .font(.system(size: 11.5).monospacedDigit())
-                .foregroundStyle(.tertiary)
+        HStack(spacing: 0) {
+            Button(action: onToggleCollapsed) {
+                HStack(spacing: 9) {
+                    AgentHomeProjectBadge(name: name, colorHex: nil)
+                        .opacity(0.55)
+                    Text(name)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(taskCount, format: .number)
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            AgentHomeDisclosureChevron(isCollapsed: isCollapsed, action: onToggleCollapsed)
         }
         .padding(.horizontal, 9)
         .frame(height: 28)
