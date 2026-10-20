@@ -179,6 +179,15 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
       - Each row shows state, checks, review, conflicts, +/−, author and head → base.
       - Each row offers T3's next step: Resolve and Fix open New chat with T3's prompt; Ready runs `gh pr ready`; Merge asks first, then runs `gh pr merge` with the first method the repository allows.
       - Clicking a row opens the pull request beside the task's terminal, signed in to GitHub.
+- **Pull requests open natively (2026-10-20):**
+  - Clicking a pull request, in the inbox or a task's Linked pull requests panel, opens it inside Agent Home, laid out like T3's detail panel. This replaces GitHub's page in a browser.
+  - Header: one primary action in T3's order (Resolve conflicts, Ready for review, Merge with the chosen method) and an overflow menu.
+  - Tabs:
+    - **Summary:** reviewers and their verdicts, labels, the description, checks and comments.
+    - **Timeline.**
+    - **Code:** unified diffs, review threads at their lines, and Viewed checkboxes kept locally.
+  - A composer comments, approves or requests changes.
+  - Data comes from one `gh api graphql` query plus the REST files list. Bodies render GitHub's `bodyHTML` in small self-sizing web views. The GitHub page is still one menu item away (Open on GitHub), and it opens in the pull request's cmux workspace.
 - **Phase 6, T3 Code integration: first version running (2026-10-20).**
   - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
   - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.
