@@ -755,6 +755,11 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 .t3-model-controls .provider-model-trigger { max-width: 220px; }
 .t3-model-menu { width: 300px; max-height: min(420px, 70vh); display: flex; flex-direction: column; overflow: hidden; }
 .t3-model-menu .cmdk-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+/* The New chat pane (T3 thread composer): project, access and plan mode beside the model. */
+#composer-view .t3-model-controls { margin-left: 0; }
+.plan-toggle.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.t3-project-menu { width: 320px; max-height: min(420px, 70vh); display: flex; flex-direction: column; overflow: hidden; }
+.t3-project-menu .cmdk-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 .t3-question {
   position: absolute; left: 24px; right: 24px; bottom: calc(100% + 7px); z-index: 3;
   display: flex; flex-direction: column; gap: 8px; padding: 12px 10px 10px 14px; border-radius: 12px;
@@ -798,7 +803,19 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 }
 .t3-question-check { flex: none; display: inline-flex; width: 18px; justify-content: center; color: var(--accent); }
 .t3-request-btn:disabled { opacity: .45; }
-@media (prefers-reduced-motion: reduce) { .t3-question, .t3-question-options { animation: none; } }
+/* T3 threads: work still running after the turn, like T3's background banner. */
+.t3-background {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 7px; padding: 6px 6px 6px 12px; border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 5%, var(--bg-input));
+  color: var(--text-dim); font: 400 calc(var(--font-size-base) - 2px) var(--font-sans);
+}
+.t3-background-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
+.t3-background-dot.waiting { animation: transcript-pulse 1.6s ease-in-out infinite; }
+.t3-background-text { flex: 1; min-width: 0; }
+.t3-background-title, .t3-background-items { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t3-background-title { color: var(--text); }
+.t3-background-items { color: var(--text-faint); }
+@media (prefers-reduced-motion: reduce) { .t3-question, .t3-question-options, .t3-background-dot.waiting { animation: none; } }
 #chat-card {
   display: flex; flex-direction: column; gap: 6px; padding: 6px;
   background: var(--bg-input); border: 0; border-radius: 14px;

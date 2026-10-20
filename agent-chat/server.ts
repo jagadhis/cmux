@@ -18,8 +18,8 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
-import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, t3Adapter, t3ModelCatalog, t3ModelSelection, t3ThreadAction } from "./adapters/t3";
-import type { T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
+import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, T3_INTERACTION_MODES, T3_RUNTIME_MODES, t3Adapter, t3BackgroundWork, t3ModelCatalog, t3ModelSelection, t3Projects, t3ThreadAction, t3Usage } from "./adapters/t3";
+import type { T3BackgroundWork, T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
 import { discoverHarnesses } from "./harnesses";
@@ -281,6 +281,7 @@ function sessionSummary(s: Session) {
       source: "t3" as const,
       request: (s.internal.t3Request as T3PendingRequest | null) ?? null,
       t3Model: t3ModelSelection(s),
+      t3Background: t3BackgroundWork(s),
     } : {}),
   };
 }
@@ -854,6 +855,10 @@ function ensureT3Session(threadId: string): Session {
       const payload = JSON.stringify({ kind: "session-t3-model", sessionId: sess.id, model: selection });
       for (const ws of sess.sockets) ws.send(payload);
     },
+    onBackground(work: T3BackgroundWork | null) {
+      const payload = JSON.stringify({ kind: "session-t3-background", sessionId: sess.id, background: work });
+      for (const ws of sess.sockets) ws.send(payload);
+    },
     onError(message) {
       if (message === lastError) return;
       lastError = message;
@@ -885,6 +890,10 @@ function t3ModelSelectionInput(raw: unknown): { instanceId: string; model: strin
       .map((o) => ({ id: o.id, value: o.value }))
     : undefined;
   return { instanceId, model, ...(cleaned?.length ? { options: cleaned } : {}) };
+}
+
+function oneOf<T extends string>(raw: unknown, allowed: readonly T[]): T | undefined {
+  return typeof raw === "string" && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined;
 }
 
 function resolveT3SessionById(id: string): Session | undefined {
@@ -2290,8 +2299,7 @@ function startServer() {
     if (url.pathname === "/api/t3/threads" && req.method === "POST") {
       try {
         const body = (await req.json()) as { projectId?: unknown; text?: unknown; runtimeMode?: unknown };
-        const runtimeModes = ["approval-required", "auto-accept-edits", "auto", "full-access"];
-        const runtimeMode = typeof body.runtimeMode === "string" && runtimeModes.includes(body.runtimeMode) ? body.runtimeMode : undefined;
+        const runtimeMode = oneOf(body.runtimeMode, T3_RUNTIME_MODES);
         if (typeof body.projectId !== "string" || typeof body.text !== "string") {
           return Response.json({ error: "projectId and text are required" }, { status: 400 });
         }
@@ -2299,6 +2307,28 @@ function startServer() {
         return Response.json({ threadId, path: prefixedPath(`/t3/${encodeURIComponent(threadId)}`) });
       } catch (err) {
         return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
+      }
+    }
+    // cmux Agent Home: provider limits and spend, as T3's Usage page reads them.
+    if (url.pathname === "/api/t3/usage" && req.method === "GET") {
+      const day = /^\d{4}-\d{2}-\d{2}$/;
+      const sinceDay = url.searchParams.get("since") ?? "";
+      const untilDay = url.searchParams.get("until") ?? "";
+      const timeZone = url.searchParams.get("tz") || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (!day.test(sinceDay) || !day.test(untilDay)) {
+        return Response.json({ error: "since and until must be YYYY-MM-DD" }, { status: 400 });
+      }
+      // Hourly: T3 wants the instants too, at most 24 hours apart.
+      const sinceTime = url.searchParams.get("sinceTime") ?? "";
+      const untilTime = url.searchParams.get("untilTime") ?? "";
+      const hourly = url.searchParams.get("resolution") === "hour" && !isNaN(Date.parse(sinceTime)) && !isNaN(Date.parse(untilTime));
+      try {
+        return Response.json(await t3Usage({
+          sinceDay, untilDay, timeZone,
+          ...(hourly ? { resolution: "hour" as const, sinceTime, untilTime } : {}),
+        }));
+      } catch (err) {
+        return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
       }
     }
     // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
@@ -2444,6 +2474,8 @@ function safeErrorMessage(op: string, err: unknown, context: { provider?: string
   // T3's refusals ("start a new chat to switch providers") are for the user; show them.
   if (op === "t3-set-model") return `Couldn't change the model in T3: ${t3Reason(err)}`;
   if (op === "respond") return `Couldn't answer in T3: ${t3Reason(err)}`;
+  if (op === "t3-launch") return `Couldn't start the chat in T3: ${t3Reason(err)}`;
+  if (op === "t3-projects") return `Couldn't read T3's projects: ${t3Reason(err)}`;
   return `Request failed: ${reason}`;
 }
 
@@ -2628,6 +2660,36 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
       t3ModelCatalog()
         .then((providers) => ws.send(JSON.stringify({ kind: "t3-models", providers })))
         .catch((err) => ws.send(JSON.stringify({ kind: "t3-models", providers: [], error: safeErrorMessage("t3-models", err) })));
+      break;
+    }
+    case "t3-projects": {
+      try {
+        ws.send(JSON.stringify({ kind: "t3-projects", projects: t3Projects() }));
+      } catch (err) {
+        ws.send(JSON.stringify({ kind: "t3-projects", projects: [], error: safeErrorMessage("t3-projects", err) }));
+      }
+      break;
+    }
+    // cmux Agent Home's New chat pane: start a T3 thread, then show it on this page.
+    case "t3-launch": {
+      const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
+      const fail = (error: string) => ws.send(JSON.stringify({ kind: "t3-launch-failed", requestId, error }));
+      if (typeof msg.projectId !== "string" || !msg.projectId || typeof msg.text !== "string" || !msg.text.trim()) {
+        fail("Pick a project and say what the agent should do.");
+        break;
+      }
+      launchT3Thread({
+        projectId: msg.projectId,
+        text: msg.text,
+        runtimeMode: oneOf(msg.runtimeMode, T3_RUNTIME_MODES),
+        interactionMode: oneOf(msg.interactionMode, T3_INTERACTION_MODES),
+        modelSelection: t3ModelSelectionInput(msg.model),
+      })
+        .then(({ threadId }) => {
+          const sess = ensureT3Session(threadId);
+          ws.send(JSON.stringify({ kind: "t3-launched", requestId, sessionId: sess.id, threadId }));
+        })
+        .catch((err) => fail(safeErrorMessage("t3-launch", err)));
       break;
     }
     case "t3-set-model": {

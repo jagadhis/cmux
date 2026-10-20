@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
 import { Tooltip } from "@base-ui-components/react/tooltip";
-import { useSession, type SessionState } from "./session";
+import { routedToT3NewChat, useSession, type SessionState } from "./session";
 import { RepositorySlugContext, SessionContext } from "./context";
 import { Composer } from "./components/Composer";
 import { Chat } from "./components/Chat";
+import { T3NewChat } from "./components/T3NewChat";
 import { useOverlayScrollbars } from "./hooks/useOverlayScrollbars";
 import { useTypeToFocus } from "./hooks/useTypeToFocus";
 
@@ -20,7 +21,7 @@ export function App() {
       <SessionContext.Provider value={s}>
         <RepositorySlugContext.Provider value={repositorySlug}>
           <main id="main">
-            {!s.ready && s.phase === "composer" ? null : s.phase === "chat" ? <Chat /> : <Composer />}
+            {s.phase === "chat" ? <Chat /> : routedToT3NewChat ? <T3NewChat /> : !s.ready ? null : <Composer />}
           </main>
         </RepositorySlugContext.Provider>
       </SessionContext.Provider>

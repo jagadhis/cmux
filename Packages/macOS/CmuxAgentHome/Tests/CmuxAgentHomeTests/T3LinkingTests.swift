@@ -45,4 +45,18 @@ import Testing
         #expect(T3Linking.directory(for: proposal(worktree: nil)) == "/Users/jags/projects/oorva-app")
         #expect(T3Linking.externalID(forProjectId: "abc") == "t3:abc")
     }
+
+    @Test func chatURLNamesItsThread() throws {
+        // The sidecar's T3 session ids are `t3-` plus the thread id in base64url.
+        let threadId = "thread:project:abc:1f2e"
+        let encoded = Data(threadId.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let url = try #require(URL(string: "http://127.0.0.1:4100/tok123/s/t3-\(encoded)?transparent=1"))
+        #expect(T3Linking.threadId(fromChatURL: url) == threadId)
+        #expect(T3Linking.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/tok123/t3/new?project=p1"))) == nil)
+        #expect(T3Linking.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/tok123/s/t-abc"))) == nil)
+        #expect(T3Linking.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/s/t3-%%%"))) == nil)
+    }
 }

@@ -7,18 +7,60 @@
 // that was already shown disappears (a rollback), it asks for a reset and
 // the history is replayed from scratch.
 //
-// It also reports what the composer needs: the thread's model selection and
-// the request T3 is waiting on (an approval, or questions with options).
+// It also reports what the composer needs: the thread's model selection, the
+// request T3 is waiting on (an approval, or questions with options), and the
+// work still going after the turn ended (T3's background-work banner).
 
 import type { AgentEvent, SessionStatus } from "../types";
 
 /** The subset of a T3 projection this module reads. Field names follow T3's contracts. */
 export interface T3Projection {
-  thread: { id: string; title: string; worktreePath?: string | null; modelSelection?: T3ModelSelection };
+  thread: {
+    id: string;
+    title: string;
+    worktreePath?: string | null;
+    modelSelection?: T3ModelSelection;
+    activeProviderThreadId?: string | null;
+    pullRequests?: T3PullRequestLink[];
+  };
   runs: T3Run[];
   messages: { id: string; role: string; text: string }[];
   turnItems: T3TurnItem[];
   runtimeRequests: T3RuntimeRequest[];
+  providerThreads?: { id: string; pendingBackgroundTasks?: T3BackgroundTask[] }[];
+}
+
+/** A pull request linked to the thread; `watch` is set while T3 watches it. */
+export interface T3PullRequestLink {
+  host: string;
+  repository: string;
+  number: number;
+  source?: string;
+  watch?: unknown;
+}
+
+export type T3BackgroundKind = "subagent" | "command" | "monitor" | "background_task";
+
+/** Work a provider reports still running after its turn. */
+export interface T3BackgroundTask {
+  taskId: string;
+  kind: string;
+  description?: string;
+  childThreadId?: string;
+}
+
+/** What T3's background-work banner shows. */
+export interface T3BackgroundWork {
+  title: string;
+  items: { taskId: string; kind: T3BackgroundKind; label: string; childThreadId?: string }[];
+  /** Subagents and monitors hold the thread: it isn't done until they end. */
+  waiting: boolean;
+}
+
+/** How Stop ends background work: interrupt the run that owns it, or unwatch pull requests. */
+export interface T3BackgroundStop {
+  runId?: string;
+  pullRequests: { host: string; repository: string; number: number }[];
 }
 
 /** T3's model selection: a provider instance, a model, and its option values. */
@@ -33,6 +75,7 @@ export interface T3Run {
   ordinal: number;
   status: string;
   userMessageId?: string | null;
+  queueHeld?: boolean;
 }
 
 export interface T3TurnItem {
@@ -52,6 +95,8 @@ export interface T3TurnItem {
   /** A `user_input_request`'s answers once given. */
   questionAnswer?: { answers?: Record<string, unknown> };
   prompt?: string;
+  nativeItemRef?: { nativeId?: string | null } | null;
+  childThreadId?: string | null;
 }
 
 export interface T3QuestionOption {
@@ -106,6 +151,10 @@ export interface T3Step {
   request: T3PendingRequest | null;
   /** The active run, for interrupts and steering. */
   activeRunId?: string;
+  /** Work still going once the turn is idle, or null. */
+  background: T3BackgroundWork | null;
+  /** Set while there is background work to stop. */
+  backgroundStop?: T3BackgroundStop;
 }
 
 const ACTIVE_RUN = new Set(["preparing", "queued", "starting", "running", "waiting"]);
@@ -161,16 +210,23 @@ export class T3Timeline {
     }
 
     const activeRun = [...runs].reverse().find((run) => ACTIVE_RUN.has(run.status));
+    const pending = pendingBackgroundWork(projection);
+    // Like T3: subagents and monitors still out hold the thread idle rather than working.
+    const held = pending.tasks.some((t) => t.kind !== "command") && pending.latestRun?.status !== "failed";
+    const status: SessionStatus = activeRun && !held ? "running" : "idle";
+    const background = status === "idle" ? presentBackgroundWork(pending.tasks) : null;
     return {
       events,
       reset,
-      status: activeRun ? "running" : "idle",
+      status,
       title: projection.thread.title,
       cwd: projection.thread.worktreePath ?? undefined,
       model: projection.thread.modelSelection?.model,
       modelSelection: projection.thread.modelSelection,
       request: pendingRequest(projection),
       activeRunId: activeRun?.id,
+      background,
+      ...(background ? { backgroundStop: pending.stop } : {}),
     };
   }
 
@@ -265,6 +321,141 @@ function foreignRuns(projection: T3Projection): T3Run[] {
       : "running",
     userMessageId: null,
   }));
+}
+
+// MARK: - Background work
+// Mirrors T3's derivePendingBackgroundWork (packages/shared) and
+// presentPendingBackgroundWork (packages/client-runtime).
+
+const BACKGROUND_ITEMS = new Set(["command_execution", "dynamic_tool", "subagent"]);
+const ACTIVE_ITEM = new Set(["pending", "running", "waiting"]);
+const SETTLED_FOR_BACKGROUND = new Set(["cancelled", "completed", "failed", "interrupted", "waiting"]);
+const BACKGROUND_KINDS: Record<T3BackgroundKind, { order: number; singular: string; plural: string }> = {
+  subagent: { order: 0, singular: "subagent", plural: "subagents" },
+  command: { order: 1, singular: "command", plural: "commands" },
+  monitor: { order: 2, singular: "monitor", plural: "monitors" },
+  background_task: { order: 3, singular: "background task", plural: "background tasks" },
+};
+
+interface PendingWork {
+  tasks: (T3BackgroundTask & { kind: T3BackgroundKind })[];
+  latestRun?: T3Run;
+  stop: T3BackgroundStop;
+}
+
+function backgroundKind(kind: string): T3BackgroundKind {
+  return kind in BACKGROUND_KINDS ? (kind as T3BackgroundKind) : "background_task";
+}
+
+function pendingBackgroundWork(projection: T3Projection): PendingWork {
+  const runs = projection.runs;
+  let latestRun: T3Run | undefined;
+  for (const run of runs) {
+    if (run.status === "queued" && run.queueHeld) continue;
+    if (!latestRun || run.ordinal > latestRun.ordinal) latestRun = run;
+  }
+  const watches = (projection.thread.pullRequests ?? [])
+    .filter((link) => link.watch !== undefined && link.watch !== null && link.source !== "stack-dismissed");
+  const watchTasks = watches.map((link) => ({
+    taskId: `pull-request-watch:${link.host}/${link.repository}#${link.number}`,
+    description: `Watching pull request #${link.number}`,
+    kind: "monitor" as const,
+  }));
+  const unwatch = watches.map(({ host, repository, number }) => ({ host, repository, number }));
+  const none: PendingWork = { tasks: [], latestRun, stop: { pullRequests: [] } };
+
+  if (runs.some((run) => run.status === "preparing" || run.status === "starting" || run.status === "running")) return none;
+  if (!latestRun) return { tasks: watchTasks, stop: { pullRequests: unwatch } };
+  if (!SETTLED_FOR_BACKGROUND.has(latestRun.status)) return none;
+
+  const byId = new Map<string, PendingWork["tasks"][number]>();
+  const activeProviderThreadId = projection.thread.activeProviderThreadId;
+  for (const providerThread of projection.providerThreads ?? []) {
+    if (activeProviderThreadId && providerThread.id !== activeProviderThreadId) continue;
+    for (const task of providerThread.pendingBackgroundTasks ?? []) {
+      if (!task.taskId || byId.has(task.taskId)) continue;
+      const description = task.description?.trim();
+      byId.set(task.taskId, {
+        taskId: task.taskId,
+        kind: backgroundKind(task.kind),
+        ...(description ? { description } : {}),
+        ...(task.kind === "subagent" && task.childThreadId ? { childThreadId: task.childThreadId } : {}),
+      });
+    }
+  }
+  const rolledBack = new Set(runs.filter((run) => run.status === "rolled_back").map((run) => run.id));
+  for (const item of projection.turnItems) {
+    if (!BACKGROUND_ITEMS.has(item.type) || !ACTIVE_ITEM.has(item.status) || rolledBack.has(item.runId)) continue;
+    if (item.type === "dynamic_tool" && (item.input as { persistent?: unknown } | null)?.persistent === true) continue;
+    const taskId = item.nativeItemRef?.nativeId || item.id;
+    if (byId.has(taskId)) continue;
+    const description = backgroundItemDescription(item);
+    byId.set(taskId, {
+      taskId,
+      kind: item.type === "subagent" ? "subagent" : item.type === "command_execution" ? "command" : "background_task",
+      ...(description ? { description } : {}),
+      ...(item.type === "subagent" && item.childThreadId ? { childThreadId: item.childThreadId } : {}),
+    });
+  }
+  const runTasks = byId.size > 0;
+  for (const task of watchTasks) byId.set(task.taskId, task);
+  return {
+    tasks: [...byId.values()],
+    latestRun,
+    // T3's Stop interrupts the latest run when it owns work; otherwise it unwatches.
+    stop: runTasks ? { runId: latestRun.id, pullRequests: [] } : { pullRequests: unwatch },
+  };
+}
+
+function backgroundItemDescription(item: T3TurnItem): string | undefined {
+  if (item.title?.trim()) return item.title.trim();
+  if (item.type === "command_execution" && typeof item.input === "string") return item.input.trim() || undefined;
+  if (item.type === "dynamic_tool" && item.toolName?.trim()) return item.toolName.trim();
+  if (item.type === "subagent" && item.prompt?.trim()) return item.prompt.trim();
+  return undefined;
+}
+
+/** T3's subagent titles drop a "Subagent:" prefix and name path-like titles by their last part. */
+function subagentLabel(title: string): string {
+  const display = title.replace(/^Subagent:\s*/i, "");
+  const path = /^\/root\/(?:[^/]+\/)*([^/]+)\/?$/u.exec(display);
+  if (!path) return display;
+  const name = path[1]!.replace(/[_\s]+/gu, " ").trim();
+  return name.replace(/(^|\s)\S/gu, (letter) => letter.toUpperCase()) || display;
+}
+
+function joinWithAnd(parts: string[]): string {
+  return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+function presentBackgroundWork(tasks: PendingWork["tasks"]): T3BackgroundWork | null {
+  if (!tasks.length) return null;
+  const waiting = tasks.some((task) => task.kind !== "command");
+  const items = tasks
+    .map((task) => {
+      const description = task.description?.trim();
+      const label = (task.kind === "subagent" && description ? subagentLabel(description).trim() : description) || "";
+      return {
+        taskId: task.taskId,
+        kind: task.kind,
+        label: label ? firstLine(label) : BACKGROUND_KINDS[task.kind].singular,
+        ...(task.kind === "subagent" && task.childThreadId ? { childThreadId: task.childThreadId } : {}),
+      };
+    })
+    .sort((a, b) => BACKGROUND_KINDS[a.kind].order - BACKGROUND_KINDS[b.kind].order);
+  const [only] = items;
+  if (items.length === 1 && only) {
+    const noun = BACKGROUND_KINDS[only.kind].singular;
+    const named = only.label !== noun;
+    const title = waiting
+      ? named ? `${only.kind === "monitor" ? "" : `Waiting on ${noun} `}${only.label}` : `Waiting on a ${noun}`
+      : named ? `Running: ${only.label}` : `Running a ${noun}`;
+    return { title, items, waiting };
+  }
+  const counts = new Map<T3BackgroundKind, number>();
+  for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+  const groups = [...counts].map(([kind, count]) => `${count} ${count === 1 ? BACKGROUND_KINDS[kind].singular : BACKGROUND_KINDS[kind].plural}`);
+  return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
 }
 
 function toolName(item: T3TurnItem): string {

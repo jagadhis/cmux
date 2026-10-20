@@ -23,6 +23,7 @@ const T3_TEXT = {
   allow: "Allow",
   allowSession: "Allow for session",
   deny: "Deny",
+  stop: "Stop",
 } as const;
 
 function usePersistSessionOptions(provider: string | undefined, options: SessionOption[], skip = false) {
@@ -210,6 +211,19 @@ export function Chat() {
               <button type="button" className="t3-request-btn" onClick={() => respondRequest(session.request!.id, "acceptForSession")}>{T3_TEXT.allowSession}</button>
               <button type="button" className="t3-request-btn primary" onClick={() => respondRequest(session.request!.id, "accept")}>{T3_TEXT.allow}</button>
             </div>
+          </div>
+        ) : null}
+        {isT3 && session?.t3Background && !running && !session.request && !session.attention ? (
+          // T3's background-work banner: the turn ended, but subagents, commands or watches still run.
+          <div className="t3-background" role="status">
+            <span className={session.t3Background.waiting ? "t3-background-dot waiting" : "t3-background-dot"} aria-hidden="true" />
+            <div className="t3-background-text">
+              <div className="t3-background-title">{session.t3Background.title}</div>
+              {session.t3Background.items.length > 1 ? (
+                <div className="t3-background-items">{session.t3Background.items.map((item) => item.label).join(", ")}</div>
+              ) : null}
+            </div>
+            <button type="button" className="t3-request-btn" onClick={stop}>{T3_TEXT.stop}</button>
           </div>
         ) : null}
         {transcriptView && session?.attention ? (

@@ -138,4 +138,66 @@ describe("T3Timeline", () => {
     ]);
     expect(step.status).toBe("idle");
   });
+
+  test("work still running after the turn ends shows like T3's background banner", () => {
+    const step = new T3Timeline().step(projection({
+      runs: [{ id: "r1", ordinal: 1, status: "completed", userMessageId: "m1" }],
+      turnItems: [
+        { id: "c1", runId: "r1", ordinal: 1, status: "running", type: "command_execution", input: "bun run dev\n--watch" },
+        { id: "c2", runId: "r1", ordinal: 2, status: "completed", type: "command_execution", input: "ls" },
+      ],
+    }));
+    expect(step.status).toBe("idle");
+    expect(step.background).toEqual({
+      title: "Running: bun run dev",
+      items: [{ taskId: "c1", kind: "command", label: "bun run dev" }],
+      waiting: false,
+    });
+    expect(step.backgroundStop).toEqual({ runId: "r1", pullRequests: [] });
+  });
+
+  test("subagents the provider still runs hold the thread idle and are named", () => {
+    const step = new T3Timeline().step(projection({
+      thread: { id: "th", title: "t", activeProviderThreadId: "pt1" },
+      runs: [{ id: "r1", ordinal: 1, status: "waiting", userMessageId: "m1" }],
+      providerThreads: [
+        { id: "pt1", pendingBackgroundTasks: [
+          { taskId: "a1", kind: "subagent", description: "Subagent: Review the diff", childThreadId: "child" },
+          { taskId: "b1", kind: "background_task", description: "Tail logs" },
+        ] },
+        { id: "other", pendingBackgroundTasks: [{ taskId: "x", kind: "command", description: "ignored" }] },
+      ],
+    }));
+    expect(step.status).toBe("idle");
+    expect(step.background).toEqual({
+      title: "Waiting on 1 subagent and 1 background task",
+      items: [
+        { taskId: "a1", kind: "subagent", label: "Review the diff", childThreadId: "child" },
+        { taskId: "b1", kind: "background_task", label: "Tail logs" },
+      ],
+      waiting: true,
+    });
+  });
+
+  test("a watched pull request shows as a monitor and stops by unwatching", () => {
+    const step = new T3Timeline().step(projection({
+      thread: { id: "th", title: "t", pullRequests: [
+        { host: "github.com", repository: "o/r", number: 7, watch: {} },
+        { host: "github.com", repository: "o/r", number: 8 },
+      ] },
+      runs: [],
+      messages: [],
+    }));
+    expect(step.background?.title).toBe("Watching pull request #7");
+    expect(step.backgroundStop).toEqual({ pullRequests: [{ host: "github.com", repository: "o/r", number: 7 }] });
+  });
+
+  test("no background banner while the run is still working", () => {
+    const step = new T3Timeline().step(projection({
+      turnItems: [{ id: "c1", runId: "r1", ordinal: 1, status: "running", type: "command_execution", input: "sleep 9" }],
+    }));
+    expect(step.status).toBe("running");
+    expect(step.background).toBeNull();
+    expect(step.backgroundStop).toBeUndefined();
+  });
 });

@@ -13,6 +13,7 @@ struct AgentHomeSidebarView: View {
     @State private var expandedT3Lists: Set<String> = []
     @Bindable private var viewState = AgentHomeTaskViewState.shared
     private let pullRequests = AgentHomePullRequestsModel.shared
+    private let usage = AgentHomeUsageModel.shared
     /// Collapsed T3-only projects (cmux projects use the group's own collapsed flag).
     @AppStorage("agentHomeCollapsedT3Projects") private var collapsedT3ProjectsRaw = ""
 
@@ -29,7 +30,7 @@ struct AgentHomeSidebarView: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 1) {
                 AgentHomeNewChatButton {
-                    viewState.newChatRequest = .init(projectId: layout.selectedTask.flatMap { t3Model.project(of: $0)?.id })
+                    t3Model.openNewChat(projectId: layout.selectedTask.flatMap { t3Model.project(of: $0)?.id }, tabManager: tabManager)
                 }
                 .padding(.bottom, 8)
 
@@ -39,11 +40,14 @@ struct AgentHomeSidebarView: View {
                     }
                 }
                 AgentHomePullRequestsSidebarRow(
-                    isSelected: viewState.showsPullRequests,
+                    isSelected: viewState.page == .pullRequests,
                     reviewCount: pullRequests.inbox?.toReview.count ?? 0,
                     actionableCount: pullRequests.inbox?.mine.filter { $0.nextStep.isActionable }.count ?? 0
                 ) {
-                    withAnimation(.easeOut(duration: 0.18)) { viewState.showsPullRequests.toggle() }
+                    withAnimation(.easeOut(duration: 0.18)) { viewState.togglePage(.pullRequests) }
+                }
+                AgentHomeUsageSidebarRow(isSelected: viewState.page == .usage, report: usage.report) {
+                    withAnimation(.easeOut(duration: 0.18)) { viewState.togglePage(.usage) }
                 }
 
                 if !snapshot.projects.isEmpty || !layout.t3OnlyProjects.isEmpty {
@@ -59,7 +63,7 @@ struct AgentHomeSidebarView: View {
                             isCollapsed: isCollapsed,
                             hiddenT3Count: t3Project.map { $0.recentTasks.count + $0.olderTasks.count } ?? 0,
                             onOpen: {
-                                viewState.showsPullRequests = false
+                                viewState.page = nil
                                 if let home = project.home { tabManager.focusTab(home.id) }
                             },
                             onToggleCollapsed: {
@@ -132,16 +136,7 @@ struct AgentHomeSidebarView: View {
         .onAppear {
             t3Model.startIfNeeded(tabManager: tabManager)
             pullRequests.startIfNeeded()
-        }
-        .sheet(item: $viewState.newChatRequest) { request in
-            AgentHomeNewChatSheet(
-                projects: t3Model.allProjects.map { T3ProjectNode(id: $0.id, name: $0.name, root: $0.root, recentTasks: [], olderTasks: []) },
-                preselectedProjectId: request.projectId,
-                initialText: request.text,
-                onStart: { projectId, text in
-                    try await t3Model.startNewChat(projectId: projectId, text: text, tabManager: tabManager)
-                }
-            )
+            usage.startIfNeeded(tabManager: tabManager)
         }
     }
 
@@ -247,7 +242,7 @@ struct AgentHomeSidebarView: View {
             indented: indented,
             shortcut: shortcut
         ) {
-            viewState.showsPullRequests = false
+            viewState.page = nil
             tabManager.focusTab(task.id)
         }
     }
@@ -268,7 +263,7 @@ struct AgentHomeSidebarView: View {
             Stop(key: "t3:\(task.id)") { t3Model.open(task, tabManager: tabManager) }
         }
         guard !stops.isEmpty else { return }
-        viewState.showsPullRequests = false
+        viewState.page = nil
         let currentKey = layout.selectedTask.map { "t3:\($0.id)" } ?? tabManager.selectedTabId?.uuidString
         let index = stops.firstIndex { $0.key == currentKey }.map { ($0 + 1) % stops.count } ?? 0
         stops[index].open()

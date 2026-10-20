@@ -172,6 +172,8 @@ export interface SessionSummary {
   request?: T3Request | null;
   /** The T3 thread's model; changing it here changes it in T3. */
   t3Model?: T3ModelSelection | null;
+  /** Work the T3 thread still runs after its turn (subagents, commands, watches): T3's background banner. */
+  t3Background?: T3BackgroundWork | null;
   /** What that agent is waiting on in the terminal (permission, question). */
   attention?: string | null;
   /** cmux agent messages waiting for that agent. */
@@ -200,6 +202,12 @@ export interface T3Request {
   answerable?: boolean;
   dismissible?: boolean;
 }
+export interface T3BackgroundWork {
+  title: string;
+  items: { taskId: string; kind: string; label: string; childThreadId?: string }[];
+  /** Subagents and monitors hold the thread until they end. */
+  waiting: boolean;
+}
 export type T3Decision = "accept" | "acceptForSession" | "decline";
 export type T3Answers = Record<string, string | string[]>;
 
@@ -215,6 +223,21 @@ export interface T3ModelProvider {
   driver: string;
   name: string;
   models: { slug: string; name: string; isDefault?: boolean; options: T3ModelOption[] }[];
+}
+
+/** What a new T3 thread in a project starts with, unless the user picks otherwise. */
+export interface T3LaunchDefaults {
+  modelSelection: T3ModelSelection | null;
+  runtimeMode: string;
+  interactionMode: string;
+}
+export interface T3Project { id: string; name: string; root: string; defaults: T3LaunchDefaults }
+export interface T3LaunchInput {
+  projectId: string;
+  text: string;
+  model: T3ModelSelection & { instanceId: string; model: string };
+  runtimeMode: string;
+  interactionMode: string;
 }
 
 /** Whether a terminal-backed chat must be answered in the terminal itself. */
@@ -334,6 +357,12 @@ export interface SessionState {
   t3Models: T3ModelProvider[] | null;
   requestT3Models(): void;
   setT3Model(selection: T3ModelSelection & { instanceId: string; model: string }): void;
+  /** T3's projects, for the New chat pane. */
+  t3Projects: T3Project[] | null;
+  requestT3Projects(): void;
+  /** Starts a T3 thread and turns this page into its chat. False when the socket isn't ready. */
+  launchT3(input: T3LaunchInput): boolean;
+  t3LaunchPending: boolean;
   setOption(id: string, value: OptionValue): void;
   fork(): void;
   handoff(): void;
@@ -368,6 +397,8 @@ function appPath(path: string): string {
 }
 
 const routedSessionId = (routePath().match(/^\/s\/([\w-]+)/) || [])[1] || null;
+/** cmux Agent Home's New chat pane: a composer that starts a T3 thread. */
+export const routedToT3NewChat = /^\/t3\/new\/?$/.test(routePath());
 /** Transcript views use `t-<agent session id>`; known before history arrives. */
 export const routedToTranscript = (routedSessionId?.startsWith("t-") || routedSessionId?.startsWith("t3-")) ?? false;
 export const composerDraftKey = "agentui.draft";
@@ -452,6 +483,9 @@ export function useSession(): SessionState {
   const [forkPending, setForkPending] = useState(false);
   const [handoffPending, setHandoffPending] = useState(false);
   const [t3Models, setT3Models] = useState<T3ModelProvider[] | null>(null);
+  const [t3Projects, setT3Projects] = useState<T3Project[] | null>(null);
+  const [t3LaunchPending, setT3LaunchPending] = useState(false);
+  const pendingT3LaunchRef = useRef<string | null>(null);
   // Reserve the tab during the click's user-activation window. The provider
   // fork itself is asynchronous, so opening it when the response arrives can
   // be rejected as a popup by the browser.
@@ -591,6 +625,12 @@ export function useSession(): SessionState {
         wsRef.current = ws;
         if (!ws) failFileDiffRequests();
         if (!ws) latestCommandRequestsRef.current.clear();
+        if (!ws && pendingT3LaunchRef.current) {
+          // The reply is lost with the socket; T3 may have started the thread anyway.
+          pendingT3LaunchRef.current = null;
+          setT3LaunchPending(false);
+          setLastError("Lost the connection while starting the chat. Check T3 before trying again.");
+        }
       },
       onOpen: () => {
         for (const requestId of pendingStartStopsRef.current) sendRaw({ op: "stop", requestId });
@@ -725,6 +765,11 @@ export function useSession(): SessionState {
               setSession((s) => (s ? { ...s, request: msg.request && typeof msg.request === "object" ? msg.request : null } : s));
             }
             break;
+          case "session-t3-background":
+            if (msg.sessionId === sessionIdRef.current) {
+              setSession((s) => (s ? { ...s, t3Background: msg.background && typeof msg.background === "object" ? msg.background : null } : s));
+            }
+            break;
           case "session-t3-model":
             if (msg.sessionId === sessionIdRef.current) {
               setSession((s) => (s ? { ...s, t3Model: msg.model && typeof msg.model === "object" ? msg.model : null } : s));
@@ -732,6 +777,33 @@ export function useSession(): SessionState {
             break;
           case "t3-models":
             setT3Models(Array.isArray(msg.providers) ? msg.providers : []);
+            break;
+          case "t3-projects":
+            setT3Projects(Array.isArray(msg.projects) ? msg.projects : []);
+            if (typeof msg.error === "string" && msg.error) setLastError(msg.error);
+            break;
+          case "t3-launched":
+            if (msg.requestId !== pendingT3LaunchRef.current || typeof msg.sessionId !== "string") break;
+            pendingT3LaunchRef.current = null;
+            setT3LaunchPending(false);
+            // Become the thread's chat, as if opened at /t3/<thread id>. cmux
+            // watches for this URL to link the pane to the thread.
+            sessionIdRef.current = msg.sessionId;
+            sessionModeRef.current = "transcript";
+            {
+              const search = new URLSearchParams(location.search);
+              search.delete("text");
+              search.delete("project");
+              const query = search.toString();
+              history.replaceState(null, "", appPath("/s/" + msg.sessionId) + (query ? `?${query}` : ""));
+            }
+            sendRaw({ op: "subscribe", sessionId: msg.sessionId });
+            break;
+          case "t3-launch-failed":
+            if (msg.requestId !== pendingT3LaunchRef.current) break;
+            pendingT3LaunchRef.current = null;
+            setT3LaunchPending(false);
+            setLastError(typeof msg.error === "string" && msg.error ? msg.error : "T3 didn't start the chat.");
             break;
           case "session-attention":
             if (msg.sessionId === sessionIdRef.current) {
@@ -983,6 +1055,19 @@ export function useSession(): SessionState {
     // Show it now; T3's update confirms it, or the server puts it back.
     setSession((s) => (s ? { ...s, t3Model: selection } : s));
   }, []);
+  const requestT3Projects = useCallback(() => {
+    sendRaw({ op: "t3-projects" });
+  }, [sendRaw]);
+  const launchT3 = useCallback((input: T3LaunchInput) => {
+    if (pendingT3LaunchRef.current) return true;
+    const requestId = newClientRequestId("t3-launch");
+    const sent = sendRaw({ op: "t3-launch", requestId, ...input });
+    if (!sent) return false;
+    pendingT3LaunchRef.current = requestId;
+    setT3LaunchPending(true);
+    setLastError("");
+    return true;
+  }, [sendRaw]);
   const focusTerminal = useCallback(() => {
     if (sessionIdRef.current) sendRaw({ op: "focus-terminal", sessionId: sessionIdRef.current });
   }, [sendRaw]);
@@ -1115,6 +1200,10 @@ export function useSession(): SessionState {
     t3Models,
     requestT3Models,
     setT3Model,
+    t3Projects,
+    requestT3Projects,
+    launchT3,
+    t3LaunchPending,
     setOption,
     fork,
     handoff,

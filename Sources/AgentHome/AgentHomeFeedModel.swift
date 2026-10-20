@@ -64,18 +64,19 @@ final class AgentHomeTaskViewState {
 
     static let shared = AgentHomeTaskViewState()
 
-    /// Whether the main area shows the pull requests list instead of the selected task.
-    var showsPullRequests = false
-
-    /// A New chat waiting to be shown, with a project and text filled in.
-    struct NewChatRequest: Identifiable {
-        let id = UUID()
-        var projectId: String?
-        var text: String = ""
+    /// A page that fills the main area instead of the selected task.
+    enum Page: Hashable {
+        case pullRequests
+        case usage
     }
 
-    /// The New chat sheet's request, set by the sidebar button or "Review with agent".
-    var newChatRequest: NewChatRequest?
+    /// The page shown instead of the selected task, if any.
+    var page: Page?
+
+    /// Shows a page, or goes back to the selected task when it's already showing.
+    func togglePage(_ page: Page) {
+        self.page = self.page == page ? nil : page
+    }
 
     private var overrides: [UUID: Mode] = [:]
 

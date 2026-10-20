@@ -141,10 +141,27 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
     - **Open in your browser.**
   - Clicking a row opens the PR in a workspace: cmux's browser beside a terminal in the matched project. Private repositories need a one-time GitHub sign-in in cmux's browser.
   - New chat now lists every T3 project, not only those with open work.
+- **Provider usage (2026-10-20):**
+  - A *Usage* sidebar row opens a Usage page in the main area. The row's meter shows the window closest to running out, with an icon when it's low.
+  - Data comes from the sidecar's `GET /api/t3/usage`, read every minute while Agent Home is open:
+    - **Limits:** T3's `server.getConfig` providers (`usageLimits`), readable with the orchestration token.
+    - **Spend:** T3's `server.getUsageSummary`. This needs the `diagnostics:read` scope. Without it, the page shows a card with the command that replaces the Keychain token, and the sidecar signs in again once the token changes.
+  - **Limits section:** one card per signed-in account (email, plan, spend this period). Each window shows a bar of what's left, a tick where even spending would be, pace (ahead, on, under), the time to reset, and a Low or Almost out status. When there are several accounts of one kind, the one with the most room in its tightest window is marked *Most room*.
+  - **Spend section** (24 hours hourly, 7 or 30 days daily):
+    - Cost, tokens, sessions and cache savings.
+    - A cost chart stacked by account, with a hover tooltip.
+    - Breakdowns by account and by model.
+    - Spend is attributed to an account when its transcript folder is under that T3 instance's `homePath`. That's something T3's own Usage page doesn't do.
+  - The parsing, pace and attribution rules are in `CmuxAgentHome/ProviderUsage.swift`, with tests.
 - **Models and questions in the chat (2026-10-20):**
   - A T3 chat's composer shows the thread's model, reasoning level and fast mode. They're read from the thread's `modelSelection`, and the choices come from T3's `server.getConfig` providers (cached for 60 s). Changing one dispatches `thread.model-selection.set`. Option values the new model also accepts are kept. Verified live in both directions: a change in cmux landed in T3, and a change in T3 showed in cmux.
   - When the agent asks questions (`user_input` requests), a card above the composer shows them one at a time. It shows the header, a progress count and option rows with 1–9 shortcuts, plus Back, Next/Submit for multi-select, and Skip when T3 allows it. Typing in the composer answers the current question with custom text. Answers go out as `runtime-request.respond` with `answers`, keyed by question id, using the option value or label, or an array for multi-select. Answered questions show in the transcript as the user's reply ("Header: answer").
   - The card's flows (single pick, multi-select, typed answer) and the model picker are checked in the gallery (`/gallery#t3-thread`). Live, questions on the test thread were answered from elsewhere within seconds every time, so the card wasn't clicked against a live request.
+- **New chat opens as a pane (2026-10-20):**
+  - New chat, and "Review with agent", open a task workspace whose chat pane is a composer (`<sidecar>/t3/new?project=…&text=…`), in place of the old sheet.
+  - The composer row has the project, T3's model, reasoning and fast mode (the same controls as a T3 chat), access (Full access, Auto, Accept edits, Ask first) and a Plan mode toggle. Each one starts at the project's default, or else at its latest thread's settings. When a project has neither, the model falls back to T3's default model.
+  - Start sends `t3-launch` over the page's socket. The sidecar launches the thread and the page becomes that thread's chat (`/s/t3-…`). cmux watches the pane's URL for that change (`T3Linking.threadId(fromChatURL:)`). It then links the workspace to the thread, names it, files it under the thread's project and opens a terminal on the right.
+  - Verified against a sidecar on a spare port: prefill, project switching (the model followed the project), and a live launch in T3's scratch project with "Ask first". T3 recorded `approval-required`, the chosen model and effort, and the page turned into the live chat. The throwaway thread was settled afterwards.
 - **Phase 6, T3 Code integration: first version running (2026-10-20).**
   - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
   - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.

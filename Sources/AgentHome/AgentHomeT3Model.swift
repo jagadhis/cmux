@@ -1,5 +1,6 @@
 import AppKit
 import CmuxAgentHome
+import Combine
 import Foundation
 import Observation
 
@@ -43,6 +44,8 @@ final class AgentHomeT3Model {
     /// time and turns away a second, so thread actions reuse the last one.
     private var knownSidecarBase: String?
     private var lastVerifyAt = Date.distantPast
+    /// New chat panes waiting for T3 to start their thread, by workspace id.
+    private var newChatWatchers: [UUID: AnyCancellable] = [:]
     private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
@@ -70,6 +73,7 @@ final class AgentHomeT3Model {
 
     /// Reads T3's database now.
     func reload() async {
+        newChatWatchers = newChatWatchers.filter { id, _ in tabManager?.tabs.contains { $0.id == id } == true }
         let openTaskIds = Set(taskLinks.compactMap { id, workspace in
             tabManager?.tabs.contains { $0.id == workspace } == true ? id : nil
         })
@@ -143,7 +147,7 @@ final class AgentHomeT3Model {
     /// Opens a task, or one of its sub-threads, as a cmux task: creates the
     /// workspace on first open, then shows the thread in its chat.
     func open(_ task: T3TaskNode, thread: T3Thread? = nil, tabManager: TabManager) {
-        AgentHomeTaskViewState.shared.showsPullRequests = false
+        AgentHomeTaskViewState.shared.page = nil
         let target = thread ?? task.thread
         if target.hasUnseenResult { markSeen(target.id, tabManager: tabManager) }
         if let existing = workspaceId(forTask: task.id, tabManager: tabManager) {
@@ -158,19 +162,10 @@ final class AgentHomeT3Model {
         let directory = task.thread.worktreePath ?? task.thread.projectRoot
         let workspace = tabManager.addWorkspace(title: task.thread.title, workingDirectory: directory, select: true)
         if let project = project(of: task) ?? projectStub(for: task) {
-            let groupId = groupId(for: project, tabManager: tabManager) ?? (project.id.isEmpty ? nil : tabManager.createWorkspaceGroup(
-                name: project.name,
-                anchorWorkingDirectory: project.root,
-                selectAnchor: false,
-                collapseSidebarSelection: false,
-                externalID: T3Linking.externalID(forProjectId: project.id)
-            ))
-            if let groupId { tabManager.addWorkspaceToGroup(workspaceId: workspace.id, groupId: groupId) }
+            file(workspace.id, in: project, tabManager: tabManager)
         }
         tabManager.focusTab(workspace.id)
-        taskLinks[task.id] = workspace.id
-        shownThreadIds[workspace.id] = target.id
-        UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
+        link(task.id, toWorkspace: workspace.id, showing: target.id)
 
         let workspaceId = workspace.id
         Task { await self.addChat(toWorkspace: workspaceId, threadId: target.id, tabManager: tabManager) }
@@ -180,6 +175,25 @@ final class AgentHomeT3Model {
     private func projectStub(for task: T3TaskNode) -> T3ProjectNode? {
         guard let name = task.thread.projectName else { return nil }
         return T3ProjectNode(id: task.thread.projectId, name: name, root: task.thread.projectRoot, recentTasks: [], olderTasks: [])
+    }
+
+    /// Files a workspace under the project's cmux project, creating it if it's missing.
+    private func file(_ workspaceId: UUID, in project: T3ProjectNode, tabManager: TabManager) {
+        let groupId = groupId(for: project, tabManager: tabManager) ?? (project.id.isEmpty ? nil : tabManager.createWorkspaceGroup(
+            name: project.name,
+            anchorWorkingDirectory: project.root,
+            selectAnchor: false,
+            collapseSidebarSelection: false,
+            externalID: T3Linking.externalID(forProjectId: project.id)
+        ))
+        if let groupId { tabManager.addWorkspaceToGroup(workspaceId: workspaceId, groupId: groupId) }
+    }
+
+    /// Records that a workspace holds a task and which of its threads the chat shows.
+    private func link(_ taskId: String, toWorkspace workspaceId: UUID, showing threadId: String) {
+        taskLinks[taskId] = workspaceId
+        shownThreadIds[workspaceId] = threadId
+        UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
     }
 
     /// Puts the thread's chat to the left of the workspace's terminal.
@@ -358,6 +372,26 @@ final class AgentHomeT3Model {
         }
     }
 
+    /// Reads a sidecar API path such as `api/t3/usage?…`, looking the sidecar up again once if it moved.
+    func sidecarGET(_ path: String, tabManager: TabManager) async throws -> (Data, Int) {
+        func get(_ base: String?) async throws -> (Data, Int) {
+            guard let base, let url = URL(string: base + path) else { throw NewChatError.sidecarUnavailable }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        do {
+            let base: String? = if let knownSidecarBase { knownSidecarBase } else { await sidecarBase(tabManager: tabManager) }
+            return try await get(base)
+        } catch is URLError {
+            knownSidecarBase = nil
+            return try await get(sidecarBase(tabManager: tabManager))
+        } catch NewChatError.sidecarUnavailable {
+            // Another lookup was in flight; it's done in a moment.
+            try await Task.sleep(for: .milliseconds(600))
+            return try await get(sidecarBase(tabManager: tabManager))
+        }
+    }
+
     // MARK: - New chat
 
     enum NewChatError: LocalizedError {
@@ -374,34 +408,93 @@ final class AgentHomeT3Model {
         }
     }
 
-    /// Starts a T3 thread in a project with a first message, then opens it as a task.
-    func startNewChat(projectId: String, text: String, tabManager: TabManager) async throws {
-        guard let base = await sidecarBase(tabManager: tabManager), let endpoint = URL(string: "\(base)api/t3/threads") else {
-            throw NewChatError.sidecarUnavailable
+    /// Opens a New chat pane: a task in the project whose chat is a composer
+    /// for a new T3 thread, with the same model, reasoning and access controls
+    /// as a T3 chat. Once T3 starts the thread, the pane becomes that task and
+    /// a terminal opens beside it, as for any opened T3 task.
+    ///
+    /// - Parameters:
+    ///   - projectId: The T3 project to start in; the user can pick another.
+    ///   - text: Text to put in the composer, like a review prompt.
+    func openNewChat(projectId: String?, text: String = "", tabManager: TabManager) {
+        AgentHomeTaskViewState.shared.page = nil
+        Task { await addNewChat(projectId: projectId, text: text, tabManager: tabManager) }
+    }
+
+    private func addNewChat(projectId: String?, text: String, tabManager: TabManager) async {
+        guard let base = await sidecarBase(tabManager: tabManager), var components = URLComponents(string: "\(base)t3/new") else {
+            showToast(error: NewChatError.sidecarUnavailable.errorDescription)
+            return
         }
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["projectId": projectId, "text": text])
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let threadId = body["threadId"] as? String else {
-            throw NewChatError.rejected(body["error"] as? String ?? "T3 didn't start the thread.")
-        }
+        components.queryItems = [URLQueryItem(name: "transparent", value: "1")]
+            + (projectId.map { [URLQueryItem(name: "project", value: $0)] } ?? [])
+            + (text.isEmpty ? [] : [URLQueryItem(name: "text", value: text)])
+        guard let url = components.url else { return }
+
         let project = allProjects.first { $0.id == projectId }
-        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-        let thread = T3Thread(
-            id: threadId,
-            projectId: projectId,
-            projectName: project?.name,
-            projectRoot: project?.root,
-            title: firstLine,
-            provider: "",
-            updatedAt: Date(),
-            latestRunStatus: "running"
-        )
-        open(T3TaskNode(thread: thread), tabManager: tabManager)
+        guard let workspace = tabManager.addWorkspaceIfActive(
+            title: String(localized: "agentHome.newChat.title", defaultValue: "New chat"),
+            workingDirectory: project?.root,
+            initialSurface: .browser,
+            initialBrowserURL: url,
+            initialBrowserOmnibarVisible: false,
+            initialBrowserTransparentBackground: true,
+            select: true
+        ) else { return }
+        if let project {
+            file(workspace.id, in: T3ProjectNode(id: project.id, name: project.name, root: project.root, recentTasks: [], olderTasks: []), tabManager: tabManager)
+        }
+        tabManager.focusTab(workspace.id)
+        guard let chat = workspace.panels.values.compactMap({ $0 as? BrowserPanel }).first else { return }
+
+        // The page moves to the thread's chat URL once T3 has started it.
+        let workspaceId = workspace.id
+        let chatId = chat.id
+        newChatWatchers[workspaceId] = chat.$currentURL
+            .compactMap { $0.flatMap(T3Linking.threadId(fromChatURL:)) }
+            .first()
+            .sink { [weak self, weak tabManager] threadId in
+                guard let self, let tabManager else { return }
+                newChatWatchers[workspaceId] = nil
+                Task { await self.linkNewChat(workspaceId: workspaceId, chatId: chatId, threadId: threadId, tabManager: tabManager) }
+            }
+    }
+
+    /// Turns a New chat pane into the task T3 just started: links it, names it,
+    /// files it under the thread's project and opens the terminal beside the chat.
+    private func linkNewChat(workspaceId: UUID, chatId: UUID, threadId: String, tabManager: TabManager) async {
+        guard let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) else { return }
+        link(threadId, toWorkspace: workspaceId, showing: threadId)
+        let thread = await startedThread(threadId)
+        if let thread {
+            _ = workspace.setCustomTitle(thread.title)
+            if let project = projectStub(for: T3TaskNode(thread: thread)) {
+                file(workspaceId, in: project, tabManager: tabManager)
+            }
+        }
+        if workspace.panels[chatId] != nil, workspace.panels.count == 1 {
+            _ = workspace.newTerminalSplit(
+                from: chatId,
+                orientation: .horizontal,
+                focus: false,
+                workingDirectory: thread.flatMap { $0.worktreePath ?? $0.projectRoot },
+                initialDividerPosition: 0.62
+            )
+        }
         await reload()
+    }
+
+    /// Reads a thread T3 has just started. T3 writes it to its database a
+    /// moment after accepting it, so this tries for a couple of seconds.
+    private func startedThread(_ threadId: String) async -> T3Thread? {
+        for attempt in 0..<6 {
+            if attempt > 0 { try? await Task.sleep(for: .milliseconds(400)) }
+            let thread = await Task.detached(priority: .userInitiated) {
+                (try? T3CodeStateReader().activeThreads(openTaskIds: [threadId]))?.first { $0.id == threadId }
+            }.value
+            if let thread { return thread }
+        }
+        return nil
     }
 
     // MARK: - Helpers

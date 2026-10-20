@@ -100,7 +100,7 @@ final class AgentHomePullRequestsModel {
     /// Opens a pull request in its own workspace: the page in a browser on the
     /// left, a terminal in the matching project's folder on the right.
     func open(_ pullRequest: GitHubPullRequest, tabManager: TabManager) {
-        AgentHomeTaskViewState.shared.showsPullRequests = false
+        AgentHomeTaskViewState.shared.page = nil
         if let existing = workspaces[pullRequest.url], tabManager.tabs.contains(where: { $0.id == existing }) {
             tabManager.focusTab(existing)
             return

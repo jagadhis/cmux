@@ -62,6 +62,24 @@ public enum T3Linking {
         "t3:\(projectId)"
     }
 
+    /// The T3 thread an agent-chat page shows, read from its URL.
+    ///
+    /// The sidecar shows a T3 thread at `…/s/t3-<thread id in base64url>`.
+    /// A New chat pane moves there once T3 has started its thread.
+    ///
+    /// - Parameter url: The chat page's URL.
+    /// - Returns: The thread id, or `nil` when the page isn't a T3 thread's chat.
+    public static func threadId(fromChatURL url: URL) -> String? {
+        let parts = url.pathComponents
+        guard let index = parts.lastIndex(of: "s"), index + 1 < parts.count, parts[index + 1].hasPrefix("t3-") else { return nil }
+        var base64 = String(parts[index + 1].dropFirst(3))
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        guard let data = Data(base64Encoded: base64), let threadId = String(data: data, encoding: .utf8), !threadId.isEmpty else { return nil }
+        return threadId
+    }
+
     /// The cmux project a T3 project belongs to.
     ///
     /// Matches, in order: a group Agent Home created for this T3 project, a

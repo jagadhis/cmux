@@ -13,7 +13,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Adapter, SessionCtx } from "../types";
-import { T3Timeline, type T3ModelSelection, type T3PendingRequest, type T3Projection } from "./t3-timeline";
+import { T3Timeline, type T3BackgroundStop, type T3BackgroundWork, type T3ModelSelection, type T3PendingRequest, type T3Projection } from "./t3-timeline";
 
 const T3CODE_DIR = process.env.CMUX_T3CODE_DIR || join(homedir(), "projects", "t3code");
 const RUNTIME_FILE = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "server-runtime.json");
@@ -26,6 +26,7 @@ export interface T3SessionHooks {
   onCwd(cwd: string): void;
   onRequest(request: T3PendingRequest | null): void;
   onModel(selection: T3ModelSelection | null): void;
+  onBackground(work: T3BackgroundWork | null): void;
   onError(message: string): void;
 }
 
@@ -35,6 +36,8 @@ interface T3State {
   activeRunId?: string;
   request: T3PendingRequest | null;
   modelSelection: T3ModelSelection | null;
+  background: T3BackgroundWork | null;
+  backgroundStop?: T3BackgroundStop;
   hooks: T3SessionHooks;
   subscription?: { interrupt(): void };
   refreshTimer?: ReturnType<typeof setTimeout>;
@@ -88,6 +91,8 @@ interface Connection {
   client: any;
   holder: any;
   closed: boolean;
+  /** The Keychain token this connection signed in with. */
+  token: string;
 }
 
 let connectionPromise: Promise<Connection> | undefined;
@@ -104,9 +109,10 @@ function connection(): Promise<Connection> {
   const pending = (async (): Promise<Connection> => {
     const m = await effectModules();
     const runtime = JSON.parse(await Bun.file(RUNTIME_FILE).text()) as { origin: string };
+    const token = readToken();
     const ticketResponse = await fetch(new URL("/api/auth/websocket-ticket", runtime.origin), {
       method: "POST",
-      headers: { authorization: `Bearer ${readToken()}` },
+      headers: { authorization: `Bearer ${token}` },
     });
     if (!ticketResponse.ok) throw new Error(`T3 refused the cmux token (HTTP ${ticketResponse.status}).`);
     const { ticket } = (await ticketResponse.json()) as { ticket: string };
@@ -125,7 +131,7 @@ function connection(): Promise<Connection> {
     let resolveClient!: (client: any) => void;
     let rejectClient!: (error: unknown) => void;
     const ready = new Promise<any>((resolve, reject) => { resolveClient = resolve; rejectClient = reject; });
-    const conn: Connection = { client: undefined, holder: undefined, closed: false };
+    const conn: Connection = { client: undefined, holder: undefined, closed: false, token };
     // The client lives as long as this fiber; its scope holds the socket open.
     conn.holder = m.Effect.runFork(m.Effect.scoped(m.Effect.gen(function* () {
       const client = yield* m.RpcClient.make(m.WsRpcGroup);
@@ -186,7 +192,7 @@ function state(sess: SessionCtx): T3State | undefined {
 
 /** Starts mirroring a T3 thread into a chat session. */
 export function attachT3Thread(sess: SessionCtx, threadId: string, hooks: T3SessionHooks) {
-  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, modelSelection: null, hooks };
+  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, modelSelection: null, background: null, hooks };
   sess.internal.t3 = s;
   void subscribe(sess, s);
 }
@@ -234,6 +240,7 @@ async function refresh(sess: SessionCtx, s: T3State) {
     if (step.reset) sess.resetHistory?.();
     for (const evt of step.events) sess.emit(evt);
     s.activeRunId = step.activeRunId;
+    s.backgroundStop = step.backgroundStop;
     sess.setStatus(step.status);
     s.hooks.onTitle(step.title);
     if (step.cwd) s.hooks.onCwd(step.cwd);
@@ -245,6 +252,10 @@ async function refresh(sess: SessionCtx, s: T3State) {
     if (JSON.stringify(step.request) !== JSON.stringify(s.request)) {
       s.request = step.request;
       s.hooks.onRequest(step.request);
+    }
+    if (JSON.stringify(step.background) !== JSON.stringify(s.background)) {
+      s.background = step.background;
+      s.hooks.onBackground(step.background);
     }
   } catch (err) {
     if (!s.disposed) s.hooks.onError(err instanceof Error ? err.message : String(err));
@@ -258,37 +269,90 @@ async function refresh(sess: SessionCtx, s: T3State) {
 
 const STATE_DB = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "statev2.sqlite");
 
-/** The settings a new thread in this project starts with: the project's
- * default model, else the project's most recent thread's model and modes. */
-function launchDefaults(projectId: string): { modelSelection: unknown; runtimeMode: string; interactionMode: string } {
+/** What a new thread in a project starts with: the project's default model,
+ * else the model of the project's most recent thread, and that thread's modes. */
+export interface T3LaunchDefaults {
+  modelSelection: T3ModelSelection | null;
+  runtimeMode: string;
+  interactionMode: string;
+}
+
+/** A T3 project a new chat can start in. */
+export interface T3Project {
+  id: string;
+  name: string;
+  root: string;
+  defaults: T3LaunchDefaults;
+}
+
+export const T3_RUNTIME_MODES = ["approval-required", "auto-accept-edits", "auto", "full-access"] as const;
+export const T3_INTERACTION_MODES = ["default", "plan"] as const;
+
+function withStateDb<T>(read: (db: import("bun:sqlite").Database) => T): T {
   const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
   const db = new Database(STATE_DB, { readonly: true });
   try {
-    const project = db.query("SELECT default_model_selection_json FROM projection_projects WHERE project_id = ?").get(projectId) as
-      | { default_model_selection_json: string | null }
-      | null;
-    const latest = db.query(
-      "SELECT payload_json FROM orchestration_v2_projection_threads WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
-    ).get(projectId) as { payload_json: string } | null;
-    const payload = latest ? JSON.parse(latest.payload_json) : {};
-    const projectModel = project?.default_model_selection_json ? JSON.parse(project.default_model_selection_json) : null;
-    const modelSelection = projectModel ?? payload.modelSelection;
-    if (!modelSelection) throw new Error("Pick a model for this project in T3 first; it has no default and no earlier threads.");
-    return {
-      modelSelection,
-      runtimeMode: payload.runtimeMode ?? "full-access",
-      interactionMode: payload.interactionMode ?? "default",
-    };
+    return read(db);
   } finally {
     db.close();
   }
 }
 
-/** Starts a new T3 thread in a project with a first message; T3 names it. */
-export async function launchT3Thread(input: { projectId: string; text: string; runtimeMode?: string }): Promise<{ threadId: string }> {
+function parseJson(text: string | null | undefined): any {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+function readLaunchDefaults(db: import("bun:sqlite").Database, projectId: string, projectModelJson: string | null): T3LaunchDefaults {
+  const latest = db.query(
+    "SELECT payload_json FROM orchestration_v2_projection_threads WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+  ).get(projectId) as { payload_json: string } | null;
+  const payload = parseJson(latest?.payload_json) ?? {};
+  return {
+    modelSelection: parseJson(projectModelJson) ?? payload.modelSelection ?? null,
+    runtimeMode: payload.runtimeMode ?? "full-access",
+    interactionMode: payload.interactionMode ?? "default",
+  };
+}
+
+/** Every T3 project that isn't deleted, by name, with what a new thread there starts with. */
+export function t3Projects(): T3Project[] {
+  return withStateDb((db) => {
+    const rows = db.query(
+      "SELECT project_id, title, workspace_root, default_model_selection_json FROM projection_projects WHERE deleted_at IS NULL ORDER BY title COLLATE NOCASE",
+    ).all() as { project_id: string; title: string | null; workspace_root: string | null; default_model_selection_json: string | null }[];
+    return rows.map((row) => ({
+      id: row.project_id,
+      name: row.title ?? "",
+      root: row.workspace_root ?? "",
+      defaults: readLaunchDefaults(db, row.project_id, row.default_model_selection_json),
+    }));
+  });
+}
+
+function launchDefaults(projectId: string): T3LaunchDefaults {
+  return withStateDb((db) => {
+    const project = db.query("SELECT default_model_selection_json FROM projection_projects WHERE project_id = ?").get(projectId) as
+      | { default_model_selection_json: string | null }
+      | null;
+    return readLaunchDefaults(db, projectId, project?.default_model_selection_json ?? null);
+  });
+}
+
+/** Starts a new T3 thread in a project with a first message; T3 names it.
+ * Settings left out come from the project, as in ``launchDefaults``. */
+export async function launchT3Thread(input: {
+  projectId: string;
+  text: string;
+  runtimeMode?: string;
+  interactionMode?: string;
+  modelSelection?: T3ModelSelection;
+}): Promise<{ threadId: string }> {
   const text = input.text.trim();
   if (!text) throw new Error("Type what the agent should do.");
   const defaults = launchDefaults(input.projectId);
+  const modelSelection = input.modelSelection ?? defaults.modelSelection;
+  if (!modelSelection) throw new Error("Pick a model for this chat; the project has no default and no earlier threads.");
   const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? text;
   const result = await run<{ threadId: string }>((client) => client["orchestration.launchThread"]({
     commandId: crypto.randomUUID(),
@@ -296,9 +360,9 @@ export async function launchT3Thread(input: { projectId: string; text: string; r
     projectId: input.projectId,
     title: firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine,
     generateTitle: true,
-    modelSelection: defaults.modelSelection,
+    modelSelection,
     runtimeMode: input.runtimeMode ?? defaults.runtimeMode,
-    interactionMode: defaults.interactionMode,
+    interactionMode: input.interactionMode ?? defaults.interactionMode,
     workspaceStrategy: { type: "root" },
     initialMessage: { text, attachments: [] },
   }));
@@ -332,6 +396,10 @@ export async function t3ThreadAction(threadId: string, action: T3ThreadAction) {
   if (action === "settle") await dispatch({ type: "thread.settle", threadId });
   else if (action === "unsettle") await dispatch({ type: "thread.unsettle", threadId, reason: "user" });
   else await dispatch({ type: "thread.visit", threadId, visitedAt: new Date().toISOString() });
+}
+
+export function t3BackgroundWork(sess: SessionCtx): T3BackgroundWork | null {
+  return state(sess)?.background ?? null;
 }
 
 export function t3ModelSelection(sess: SessionCtx): T3ModelSelection | null {
@@ -418,9 +486,17 @@ export const t3Adapter: Adapter = {
   },
   stop(sess) {
     const s = state(sess);
-    if (!s?.activeRunId) return;
-    void dispatch({ type: "run.interrupt", threadId: s.threadId, runId: s.activeRunId })
-      .catch((err) => s.hooks.onError(err instanceof Error ? err.message : String(err)));
+    if (!s) return;
+    const fail = (err: unknown) => s.hooks.onError(err instanceof Error ? err.message : String(err));
+    // Like T3's Stop: the active run, else the run that owns the background work, else the pull request watches.
+    const runId = s.activeRunId ?? s.backgroundStop?.runId;
+    if (runId) {
+      void dispatch({ type: "run.interrupt", threadId: s.threadId, runId }).catch(fail);
+      return;
+    }
+    for (const pr of s.backgroundStop?.pullRequests ?? []) {
+      void dispatch({ type: "thread.pull-request.watch", threadId: s.threadId, ...pr, watching: false }).catch(fail);
+    }
   },
   dispose(sess) {
     const s = state(sess);
@@ -436,3 +512,103 @@ export const t3Adapter: Adapter = {
 };
 
 
+
+// MARK: - Usage
+
+/** One provider's rate-limit windows, as T3's Limits view shows them. */
+export interface T3UsageLimits {
+  instanceId: string;
+  driver: string;
+  name: string;
+  email?: string;
+  plan?: string;
+  /** The account's config folder; the spend summary's `sourcePath`s sit under it. */
+  homePath?: string;
+  checkedAt?: string;
+  windows: { id: string; kind: string; label: string; usedPercent: number; resetsAt?: string; windowDurationMins?: number }[];
+  unavailable?: { reason: string; message?: string };
+  externalUsage?: { label: string; url: string };
+}
+
+/** What cmux shows for provider usage: limits always, spend when the token may read it. */
+export interface T3UsageReport {
+  limits: T3UsageLimits[];
+  summary: unknown | null;
+  summaryError?: string;
+}
+
+/** The providers' rate-limit windows and, when allowed, token use and cost by day.
+ *
+ * Limits come with `server.getConfig`, which the orchestration token can read.
+ * The spend summary (`server.getUsageSummary`) needs the `diagnostics:read`
+ * scope; without it the report says so instead of failing. */
+export async function t3Usage(input: {
+  sinceDay: string;
+  untilDay: string;
+  timeZone: string;
+  resolution?: "day" | "hour";
+  sinceTime?: string;
+  untilTime?: string;
+}): Promise<T3UsageReport> {
+  const readSummary = () => run<unknown>((client) => client["server.getUsageSummary"](input)).then(
+    (value) => ({ value, error: undefined as string | undefined }),
+    (err) => ({ value: null, error: t3UsageError(err) }),
+  );
+  let [config, summary] = await Promise.all([
+    run<{ providers: any[] }>((client) => client["server.getConfig"]({})),
+    readSummary(),
+  ]);
+  // The scope belongs to the token the socket signed in with, so after the
+  // user issues a new one with diagnostics:read, sign in again to use it.
+  if (summary.error === "needsDiagnosticsScope") {
+    const conn = await connection();
+    if (readToken() !== conn.token) {
+      dropConnection(conn);
+      summary = await readSummary();
+    }
+  }
+  const instances = (config as { settings?: { providerInstances?: Record<string, { config?: { homePath?: unknown } }> } })
+    .settings?.providerInstances ?? {};
+  const limits = (config.providers ?? [])
+    .filter((p) => p.enabled !== false && p.installed !== false && p.availability !== "unavailable" && p.usageLimits)
+    .map((p): T3UsageLimits => {
+      const homePath = homePathOf(p, instances);
+      return {
+        instanceId: String(p.instanceId),
+        driver: String(p.driver ?? p.instanceId),
+        name: String(p.displayName ?? p.instanceId),
+        ...(p.auth?.email ? { email: String(p.auth.email) } : {}),
+        ...(p.auth?.type && p.auth.type !== "apiKey" ? { plan: String(p.auth.type) } : {}),
+        ...(homePath ? { homePath } : {}),
+        checkedAt: p.usageLimits.checkedAt,
+        windows: (p.usageLimits.windows ?? []).map((w: any) => ({
+          id: String(w.id),
+          kind: String(w.kind),
+          label: String(w.label),
+          usedPercent: Number(w.usedPercent) || 0,
+          ...(w.resetsAt ? { resetsAt: String(w.resetsAt) } : {}),
+          ...(typeof w.windowDurationMins === "number" ? { windowDurationMins: w.windowDurationMins } : {}),
+        })),
+        ...(p.usageLimits.unavailable ? { unavailable: p.usageLimits.unavailable } : {}),
+        ...(p.usageLimits.externalUsage ? { externalUsage: p.usageLimits.externalUsage } : {}),
+      };
+    });
+  return { limits, summary: summary.value, ...(summary.error ? { summaryError: summary.error } : {}) };
+}
+
+/** Where a provider instance keeps its transcripts: its configured home, else the driver's default. */
+function homePathOf(provider: any, instances: Record<string, { config?: { homePath?: unknown } }>): string | undefined {
+  const configured = instances[String(provider.instanceId)]?.config?.homePath;
+  if (typeof configured === "string" && configured.trim()) return configured.trim().replace(/^~(?=\/|$)/, homedir());
+  if (typeof provider.runtimePaths?.homePath === "string") return provider.runtimePaths.homePath;
+  if (provider.instanceId === "claudeAgent") return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  if (provider.instanceId === "codex") return process.env.CODEX_HOME || join(homedir(), ".codex");
+  return undefined;
+}
+
+function t3UsageError(err: unknown): string {
+  const tag = (err as { _tag?: string })?._tag ?? "";
+  const text = err instanceof Error ? err.message : String(err);
+  if (tag === "EnvironmentAuthorizationError" || /scope|authoriz|forbidden/i.test(text)) return "needsDiagnosticsScope";
+  return text.slice(0, 300);
+}

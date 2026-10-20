@@ -26,7 +26,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
     /// Whether Overview is showing for the selected workspace, so its terminals should be hidden.
     @MainActor
     static func hidesSelectedWorkspace(isActive: Bool, tabManager: TabManager) -> Bool {
-        if isActive && AgentHomeTaskViewState.shared.showsPullRequests { return true }
+        if isActive && AgentHomeTaskViewState.shared.page != nil { return true }
         guard isActive,
               let selectedId = tabManager.selectedTabId,
               let workspace = tabManager.tabs.first(where: { $0.id == selectedId })
@@ -43,9 +43,9 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
         let t3Task: T3TaskNode? = isActive ? tabManager.selectedTabId.flatMap(t3Model.task(forWorkspace:)) : nil
         let mode = task.map(viewState.mode(for:)) ?? .sessions
 
-        let showsPullRequests = isActive && viewState.showsPullRequests
+        let page = isActive ? viewState.page : nil
         VStack(spacing: 0) {
-            if showsPullRequests {
+            if page != nil {
                 EmptyView()
             } else if let task, let t3Task {
                 let shownId = t3Model.shownThreadIds[task.id] ?? t3Task.thread.id
@@ -70,13 +70,17 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             }
             ZStack {
                 content
-                if showsPullRequests {
+                if page == .usage {
+                    AgentHomeUsageView(tabManager: tabManager)
+                        .transition(.opacity)
+                } else if page == .pullRequests {
                     AgentHomePullRequestsView(
                         tabManager: tabManager,
                         onReviewWithAgent: { pullRequest in
-                            viewState.newChatRequest = .init(
+                            t3Model.openNewChat(
                                 projectId: AgentHomePullRequestsModel.shared.project(for: pullRequest)?.id,
-                                text: AgentHomePullRequestsModel.reviewPrompt(for: pullRequest)
+                                text: AgentHomePullRequestsModel.reviewPrompt(for: pullRequest),
+                                tabManager: tabManager
                             )
                         },
                         onOpenThread: { link in
@@ -101,7 +105,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: mode)
-        .animation(.easeOut(duration: 0.18), value: showsPullRequests)
+        .animation(.easeOut(duration: 0.18), value: page)
         .task(id: isActive ? feedModel.resolutionToken : -1) {
             guard isActive else { return }
             await feedModel.resolveTargets(for: feedModel.workstreamIDs)
