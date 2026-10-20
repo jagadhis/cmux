@@ -124,6 +124,7 @@ import Testing
 
     @Test func agentKindFromHookKey() {
         #expect(AgentHomeAgentKind(hookAgentKey: "Claude") == .claude)
+        #expect(AgentHomeAgentKind(hookAgentKey: "claude_code") == .claude)
         #expect(AgentHomeAgentKind(hookAgentKey: "codex") == .codex)
         #expect(AgentHomeAgentKind(hookAgentKey: "gemini") == .other("gemini"))
     }

@@ -9,7 +9,7 @@ struct AgentHomeSidebarView: View {
     @ObservedObject var tabManager: TabManager
 
     var body: some View {
-        let snapshot = AgentHomeSnapshotBuilder.snapshot(tabManager: tabManager)
+        let snapshot = AgentHomeSnapshotBuilder.snapshot(tabManager: tabManager, feed: AgentHomeFeedModel.shared.signals())
         let shortcutNumbers = Dictionary(
             uniqueKeysWithValues: snapshot.listedTasks.prefix(9).enumerated().map { ($1.id, $0 + 1) }
         )

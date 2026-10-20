@@ -1826,11 +1826,18 @@ struct ContentView: View {
         }
         let mountedWorkspaceIdSet = Set(presentationMountedIds)
         let mountedWorkspaces = tabManager.tabs.filter { mountedWorkspaceIdSet.contains($0.id) }
+        // Agent Home's Overview replaces the selected workspace's terminals
+        // through the same visibility flag workspace switching uses.
+        let isAgentHomeActive = effectiveLeftSidebarProviderId == CmuxExtensionSidebarSelection.agentHomeProviderId
+        let agentHomeHidesSelectedWorkspace = AgentHomeWorkspaceArea<EmptyView>.hidesSelectedWorkspace(
+            isActive: isAgentHomeActive,
+            tabManager: tabManager
+        )
 
-        return ZStack {
+        return AgentHomeWorkspaceArea(isActive: isAgentHomeActive, tabManager: tabManager, content: ZStack {
             ZStack {
                 ForEach(mountedWorkspaces) { tab in
-                    let isSelectedWorkspace = selectedWorkspaceId == tab.id
+                    let isSelectedWorkspace = selectedWorkspaceId == tab.id && !agentHomeHidesSelectedWorkspace
                     // Never retain a live source workspace as a loading cover:
                     // that makes mount ownership depend on a later frame signal.
                     WorkspaceContentView(
@@ -1860,7 +1867,7 @@ struct ContentView: View {
             .opacity(sidebarSelectionState.selection == .tabs ? 1 : 0)
             .allowsHitTesting(sidebarSelectionState.selection == .tabs)
             .accessibilityHidden(sidebarSelectionState.selection != .tabs)
-        }
+        })
         .modifier(WorkspacePresentationModeContentTopPaddingModifier(
             isFullScreen: isFullScreen,
             runtimeCache: workspacePresentationModeRuntimeCache

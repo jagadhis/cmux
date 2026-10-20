@@ -9,17 +9,20 @@ import Foundation
 /// re-renders when lifecycle, branch, PR or status changes.
 @MainActor
 enum AgentHomeSnapshotBuilder {
-    static func snapshot(tabManager: TabManager) -> AgentHomeSnapshot {
+    static func snapshot(
+        tabManager: TabManager,
+        feed: [String: AgentHomeFeedSignals] = [:]
+    ) -> AgentHomeSnapshot {
         let projects = tabManager.workspaceGroups.map { group -> AgentHomeProjectInput in
             var homeTaskId: UUID?
             if case .workspace(let anchorId) = group.anchor { homeTaskId = anchorId }
             return AgentHomeProjectInput(id: group.id, name: group.name, colorHex: group.customColor, homeTaskId: homeTaskId)
         }
-        let tasks = tabManager.tabs.map(taskInput(for:))
+        let tasks = tabManager.tabs.map { taskInput(for: $0, feed: feed) }
         return AgentHomeProjection.snapshot(projects: projects, tasks: tasks)
     }
 
-    static func taskInput(for workspace: Workspace) -> AgentHomeTaskInput {
+    static func taskInput(for workspace: Workspace, feed: [String: AgentHomeFeedSignals] = [:]) -> AgentHomeTaskInput {
         let orderedPanelIds = workspace.sidebarOrderedPanelIds()
         let branch = workspace.sidebarGitBranchesInDisplayOrder(orderedPanelIds: orderedPanelIds).first
         let pullRequest = workspace.sidebarPullRequestsInDisplayOrder(orderedPanelIds: orderedPanelIds).first
@@ -31,24 +34,57 @@ enum AgentHomeSnapshotBuilder {
             branch: branch?.branch,
             directory: workspace.currentDirectory,
             pullRequest: pullRequest.map(pullRequestInput(for:)),
-            agents: agents(in: workspace, orderedPanelIds: orderedPanelIds)
+            agents: agents(in: workspace, orderedPanelIds: orderedPanelIds, feed: feed)
         )
     }
 
-    static func agents(in workspace: Workspace, orderedPanelIds: [UUID]) -> [AgentHomeAgent] {
+    static func agents(
+        in workspace: Workspace,
+        orderedPanelIds: [UUID],
+        feed: [String: AgentHomeFeedSignals] = [:]
+    ) -> [AgentHomeAgent] {
         let states = workspace.agentLifecycleStatesByPanelId
+        let usageByKey = workspace.sidebarMetadata.agentUsageByStatusKey
         return orderedPanelIds.flatMap { panelId -> [AgentHomeAgent] in
-            guard let panel = workspace.panels[panelId], let byAgent = states[panelId] else { return [] }
+            guard workspace.panels[panelId] != nil, let byAgent = states[panelId] else { return [] }
+            let signals = feed[panelId.uuidString.uppercased()]
             return byAgent.keys.sorted().compactMap { agentKey in
-                guard let state = byAgent[agentKey].flatMap(agentState(for:)) else { return nil }
+                guard !AgentHibernationLifecycleStatusKeys.isManualKey(agentKey),
+                      let state = byAgent[agentKey].flatMap(agentState(for:))
+                else { return nil }
+                let usage = usageByKey[agentKey]
                 return AgentHomeAgent(
                     id: "\(panelId.uuidString):\(agentKey)",
                     kind: AgentHomeAgentKind(hookAgentKey: agentKey),
-                    title: workspace.panelCustomTitles[panelId] ?? panel.displayTitle,
-                    state: state
+                    title: userTitle(for: panelId, in: workspace)
+                        ?? signals?.sessionTitle
+                        ?? AgentHomeAgentKind(hookAgentKey: agentKey).displayName,
+                    modelName: usage?.modelName,
+                    state: state,
+                    startedAt: signals?.startedAt,
+                    lastActivityAt: signals?.lastActivityAt,
+                    contextFraction: usage?.contextFraction,
+                    estimatedCostUSD: usage?.estimatedCostUSD,
+                    currentActivity: state == .idle ? nil : signals?.currentActivity,
+                    lastSummary: signals?.lastSummary,
+                    plan: signals?.plan ?? [],
+                    pendingPermission: signals?.pendingPermission
                 )
             }
         }
+    }
+
+    /// A tab title the user set. Auto titles (the running command) aren't
+    /// good card titles, so they lose to the session's first prompt.
+    static func userTitle(for panelId: UUID, in workspace: Workspace) -> String? {
+        guard let title = workspace.panelCustomTitles[panelId] else { return nil }
+        let source = workspace.panelCustomTitleSources[panelId] ?? .user
+        return source == .user ? title : nil
+    }
+
+    /// The terminal panel an agent card runs in, from its id (`<panel uuid>:<agent key>`).
+    static func panelId(forAgentId agentId: String) -> UUID? {
+        agentId.split(separator: ":").first.flatMap { UUID(uuidString: String($0)) }
     }
 
     static func agentState(for state: AgentHibernationLifecycleState) -> AgentHomeAgentState? {

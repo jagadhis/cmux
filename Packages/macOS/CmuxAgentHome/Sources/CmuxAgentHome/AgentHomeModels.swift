@@ -23,7 +23,7 @@ public enum AgentHomeAgentKind: Hashable, Sendable {
     /// - Parameter hookAgentKey: The agent key, compared case-insensitively.
     public init(hookAgentKey: String) {
         switch hookAgentKey.lowercased() {
-        case "claude", "claude-code", "claudecode": self = .claude
+        case "claude", "claude_code", "claude-code", "claudecode": self = .claude
         case "codex": self = .codex
         case "opencode": self = .opencode
         default: self = .other(hookAgentKey)

@@ -139,8 +139,11 @@
 		F65760200000000000000001 /* AgentHibernationTranscriptHookStoreFileMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65760200000000000000002 /* AgentHibernationTranscriptHookStoreFileMirror.swift */; };
 		F65760210000000000000001 /* AgentHibernationTranscriptHookStoreRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65760210000000000000002 /* AgentHibernationTranscriptHookStoreRecord.swift */; };
 		F65760250000000000000001 /* AgentHibernationTranscriptSnapshotRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65760250000000000000002 /* AgentHibernationTranscriptSnapshotRaceTests.swift */; };
+		408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */; };
+		C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
+		AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */; };
 		A61E00010000000000000001 /* AgentHookDeliveryEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61E00010000000000000003 /* AgentHookDeliveryEvent.swift */; };
 		A61E00010000000000000005 /* AgentHookDeliveryProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61E00010000000000000006 /* AgentHookDeliveryProcess.swift */; };
 		A61E00010000000000000002 /* AgentHookDeliveryQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61E00010000000000000004 /* AgentHookDeliveryQueue.swift */; };
@@ -4931,8 +4934,11 @@
 		F65760200000000000000002 /* AgentHibernationTranscriptHookStoreFileMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/AgentHibernationTranscriptHookStoreFileMirror.swift"; sourceTree = "<group>"; };
 		F65760210000000000000002 /* AgentHibernationTranscriptHookStoreRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "App/AgentHibernationTranscriptHookStoreRecord.swift"; sourceTree = "<group>"; };
 		F65760250000000000000002 /* AgentHibernationTranscriptSnapshotRaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHibernationTranscriptSnapshotRaceTests.swift; sourceTree = "<group>"; };
+		B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedIndex.swift; sourceTree = "<group>"; };
+		1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedModel.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
+		D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeTaskOverviewView.swift; sourceTree = "<group>"; };
 		A61E00010000000000000003 /* AgentHookDeliveryEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookDeliveryEvent.swift; sourceTree = "<group>"; };
 		A61E00010000000000000006 /* AgentHookDeliveryProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookDeliveryProcess.swift; sourceTree = "<group>"; };
 		A61E00010000000000000004 /* AgentHookDeliveryQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookDeliveryQueue.swift; sourceTree = "<group>"; };
@@ -12447,6 +12453,9 @@
 				30AA2D44945B6C4A24A6D837 /* TerminalController+BrowserEmulation.swift */,
 				FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */,
 				30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */,
+				B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */,
+				1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */,
+				D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -14993,8 +15002,11 @@
 				F65760050000000000000001 /* AgentHibernationTranscriptGuard.swift in Sources */,
 				F65760200000000000000001 /* AgentHibernationTranscriptHookStoreFileMirror.swift in Sources */,
 				F65760210000000000000001 /* AgentHibernationTranscriptHookStoreRecord.swift in Sources */,
+				408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */,
+				C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
+				AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */,
 				A61E00010000000000000001 /* AgentHookDeliveryEvent.swift in Sources */,
 				A61E00010000000000000005 /* AgentHookDeliveryProcess.swift in Sources */,
 				A61E00010000000000000002 /* AgentHookDeliveryQueue.swift in Sources */,

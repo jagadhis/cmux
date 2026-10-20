@@ -106,6 +106,16 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - Tasks have status dots and ⌘1–9 hints on hover.
   - Still to do: the ⌘1–9 key bindings themselves, collapsing projects, and the usage meter.
 
+- **Phase 3, task overview and agent cards: first version running (2026-10-20).**
+  - With Agent Home as the sidebar, every task gets a header (project, title, branch, PR, agent count, elapsed time, cost) and an Overview / Sessions switch.
+  - Overview replaces the terminals by marking the selected workspace not visible (the workspace-switching path), because portal-hosted terminals can draw above SwiftUI. Sessions shows the terminals.
+  - Agent cards show the title (the session's first prompt, unless you named the tab), model, elapsed time, context ring, live "doing now" line, plan, the last reply when idle, and Allow / Always allow / Deny for pending permission requests.
+  - The side column shows the PR and its checks, plus changed files refreshed every 10 s. A composer sends text to the chosen agent through the Feed's send-text path.
+  - Verified live with Claude Code 2.1.303: title, model, context %, Working/Idle, live activity line, last reply and changed files.
+  - Not verified live: approvals. The owner's Claude runs in auto mode even with `--permission-mode default`, so no permission request was raised.
+  - Plans: this Claude Code version has no `TodoWrite` or task-list tool, so Claude cards show no plan for now. Agents that report todos still do.
+  - Agent cards read the Feed's in-memory items (`FeedCoordinator.shared.store`), not `~/.cmuxterm/workstream.jsonl`, which redacts paths.
+
 ### Building on this machine
 
 - **Commands:** `CMUX_DEV_BACKEND_MODE=local ./scripts/reload.sh --tag agent-home`, with Homebrew's rustup on `PATH` (`/opt/homebrew/opt/rustup/bin`). Zig must be 0.16 (`brew install zig@0.16`).
