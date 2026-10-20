@@ -31,28 +31,56 @@ public struct T3CodeStateReader: Sendable {
         self.databaseURL = databaseURL
     }
 
-    /// Reads every thread that isn't archived or deleted, with its project and linked pull requests.
+    /// Reads the threads Agent Home lists: those that aren't archived, deleted,
+    /// settled or snoozed.
     ///
+    /// A thread counts as settled when its task's root thread is: settling a
+    /// task in T3 settles the sub-threads its agents created with it. Threads
+    /// with a live run or a pending request are always read, and so is every
+    /// thread of a task in `openTaskIds`, so a task open in cmux stays readable
+    /// after it's settled.
+    ///
+    /// - Parameter openTaskIds: Root thread ids of tasks open in cmux.
     /// - Returns: The threads, most recently updated first.
     /// - Throws: ``ReadError`` when the database can't be opened or queried.
-    public func activeThreads() throws -> [T3Thread] {
+    public func activeThreads(openTaskIds: Set<String> = []) throws -> [T3Thread] {
         let db = try open()
         defer { sqlite3_close_v2(db) }
 
         let pullRequests = try readPullRequests(db)
+        let openIds = openTaskIds.sorted()
+        let openList = openIds.isEmpty ? "NULL" : Array(repeating: "?", count: openIds.count).joined(separator: ", ")
         let sql = """
+            WITH latest_run AS (
+                SELECT r.thread_id, r.status, r.completed_at
+                FROM orchestration_v2_projection_runs r
+                WHERE r.ordinal = (SELECT max(ordinal) FROM orchestration_v2_projection_runs WHERE thread_id = r.thread_id)
+            )
             SELECT t.thread_id, t.project_id, p.title, t.title, t.default_provider,
                    t.created_at, t.updated_at, t.payload_json, p.workspace_root,
-                   (SELECT r.status FROM orchestration_v2_projection_runs r
-                     WHERE r.thread_id = t.thread_id ORDER BY r.ordinal DESC LIMIT 1),
+                   lr.status,
                    (SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
-                     WHERE q.thread_id = t.thread_id AND q.status = 'pending')
+                     WHERE q.thread_id = t.thread_id AND q.status = 'pending'),
+                   lr.completed_at,
+                   json_extract(coalesce(root.payload_json, t.payload_json), '$.settledOverride') = 'settled'
             FROM orchestration_v2_projection_threads t
             LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
+            LEFT JOIN orchestration_v2_projection_threads root
+                   ON root.thread_id = json_extract(t.payload_json, '$.lineage.rootThreadId')
+                  AND root.thread_id <> t.thread_id
+            LEFT JOIN latest_run lr ON lr.thread_id = t.thread_id
             WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
+              AND (
+                (coalesce(json_extract(coalesce(root.payload_json, t.payload_json), '$.settledOverride'), '') <> 'settled'
+                  AND coalesce(julianday(json_extract(coalesce(root.payload_json, t.payload_json), '$.snoozedUntil')), 0) <= julianday('now'))
+                OR lr.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+                OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests q
+                            WHERE q.thread_id = t.thread_id AND q.status = 'pending')
+                OR coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id) IN (\(openList))
+              )
             ORDER BY t.updated_at DESC
             """
-        return try query(db, sql) { row in
+        return try query(db, sql, bind: openIds) { row in
             let payload = Self.jsonObject(row.text(7))
             let lineage = payload["lineage"] as? [String: Any]
             let id = row.text(0) ?? ""
@@ -72,9 +100,71 @@ public struct T3CodeStateReader: Sendable {
                 rootThreadId: lineage?["rootThreadId"] as? String,
                 relationshipToParent: lineage?["relationshipToParent"] as? String,
                 latestRunStatus: row.text(9),
-                hasPendingRequest: row.int(10) > 0
+                hasPendingRequest: row.int(10) > 0,
+                latestRunCompletedAt: Self.date(row.text(11)),
+                lastVisitedAt: Self.date(payload["lastVisitedAt"] as? String),
+                isSettled: row.int(12) == 1
             )
         }
+    }
+
+    /// A T3 project.
+    public struct Project: Hashable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        public var root: String
+
+        public init(id: String, name: String, root: String) {
+            self.id = id
+            self.name = name
+            self.root = root
+        }
+    }
+
+    /// Every T3 project that isn't deleted, by name. New chats can start in any of them,
+    /// including ones whose threads are all settled.
+    public func projects() throws -> [Project] {
+        let db = try open()
+        defer { sqlite3_close_v2(db) }
+        let sql = "SELECT project_id, title, workspace_root FROM projection_projects WHERE deleted_at IS NULL ORDER BY title COLLATE NOCASE"
+        return try query(db, sql) { row in
+            Project(id: row.text(0) ?? "", name: row.text(1) ?? "", root: row.text(2) ?? "")
+        }
+    }
+
+    /// A T3 thread linked to a pull request.
+    public struct PullRequestThread: Hashable, Sendable {
+        /// The linked thread.
+        public var threadId: String
+        public var title: String
+        /// The task it belongs to: its lineage root, or itself.
+        public var taskId: String
+
+        public init(threadId: String, title: String, taskId: String) {
+            self.threadId = threadId
+            self.title = title
+            self.taskId = taskId
+        }
+    }
+
+    /// T3 threads linked to pull requests, keyed by `owner/name#number`, most recently updated thread first.
+    /// Settled threads count; archived and deleted ones don't.
+    public func pullRequestThreads() throws -> [String: PullRequestThread] {
+        let db = try open()
+        defer { sqlite3_close_v2(db) }
+        let sql = """
+            SELECT pr.repository, pr.number, t.thread_id, t.title,
+                   coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id)
+            FROM projection_thread_pull_requests pr
+            JOIN orchestration_v2_projection_threads t ON t.thread_id = pr.thread_id
+            WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
+            ORDER BY t.updated_at ASC
+            """
+        let rows: [(String, PullRequestThread)] = try query(db, sql) { row in
+            ("\(row.text(0) ?? "")#\(row.int(1))", PullRequestThread(threadId: row.text(2) ?? "", title: row.text(3) ?? "", taskId: row.text(4) ?? ""))
+        }
+        // Later rows are newer, so they win.
+        return Dictionary(rows, uniquingKeysWith: { _, newer in newer })
     }
 
     private func readPullRequests(_ db: OpaquePointer) throws -> [String: [T3Thread.PullRequest]] {
@@ -106,12 +196,16 @@ public struct T3CodeStateReader: Sendable {
         return db
     }
 
-    private func query<T>(_ db: OpaquePointer, _ sql: String, _ map: (Row) -> T) throws -> [T] {
+    private func query<T>(_ db: OpaquePointer, _ sql: String, bind values: [String] = [], _ map: (Row) -> T) throws -> [T] {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw ReadError.query(String(cString: sqlite3_errmsg(db)))
         }
         defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (index, value) in values.enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient)
+        }
         var results: [T] = []
         while true {
             let step = sqlite3_step(statement)

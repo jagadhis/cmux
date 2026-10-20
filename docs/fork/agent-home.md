@@ -117,6 +117,30 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - Agent cards read the Feed's in-memory items (`FeedCoordinator.shared.store`), not `~/.cmuxterm/workstream.jsonl`, which redacts paths.
 
 - **Chat-first rework (2026-10-20):** T3 Code is the source of truth. T3 threads are tasks with their sub-threads nested, opened as chat plus terminal, with an Overview tab and New chat. Approvals were verified live: a command request in an approval-required thread was answered from the in-chat card and resolved in T3 as accept.
+- **Open work only; working, done, verify (2026-10-20):**
+  - The T3 reader skips settled tasks (their root thread's `settledOverride` is `settled`) and their sub-threads, plus snoozed threads. On the owner's data that's about 45 of 1,930 threads, read in about 24 ms. Threads with a live run or pending request, and tasks open in cmux, are always read.
+  - Task states:
+    - **Needs you:** amber.
+    - **Working:** pulse. The filter is renamed from "Running".
+    - **Done:** a finished, unsettled run. It shows a green check, filled until the user has seen it (T3's rule: the run finished after `lastVisitedAt`), and amber if the run stopped early. Done tasks are counted under "Ready for review".
+  - Opening a thread, or watching a run finish, sends `thread.visit`.
+  - **Mark verified** (header button, or ✓ on row hover) sends `thread.settle` through the sidecar (`POST /api/t3/threads/<id>/settle`). It closes the task's workspace, which asks first if something is still running. If the task was on screen, it opens the next task waiting for review. A toast offers Undo (`thread.unsettle`) for 6 s.
+  - Verified live on a throwaway thread: verify from the header and from the row, then undo.
+- **Pull requests (2026-10-20):**
+  - A sidebar row opens the user's GitHub pull requests in the main area:
+    - **To review:** `review-requested:@me`, split into new and "asked again after your review".
+    - **Yours:** `author:@me`, split into "Needs you" (conflicts, failing checks, changes requested, ready to merge) and "Waiting".
+  - Data comes from one `gh api graphql` call, every 2 minutes or on ⌘R, with one retry because GitHub search sometimes returns 502.
+  - Rows show:
+    - **Status:** CI, review state, draft and conflicts.
+    - **Activity:** comments, size, author, and when it was last updated.
+    - **Links:** a T3 chip when a T3 thread links the PR.
+  - Hover actions:
+    - **Review with agent:** a New chat prefilled with a review prompt, in the project whose git origin, or else folder name, matches the repository.
+    - **Open thread:** when a T3 thread links the PR.
+    - **Open in your browser.**
+  - Clicking a row opens the PR in a workspace: cmux's browser beside a terminal in the matched project. Private repositories need a one-time GitHub sign-in in cmux's browser.
+  - New chat now lists every T3 project, not only those with open work.
 - **Models and questions in the chat (2026-10-20):**
   - A T3 chat's composer shows the thread's model, reasoning level and fast mode. They're read from the thread's `modelSelection`, and the choices come from T3's `server.getConfig` providers (cached for 60 s). Changing one dispatches `thread.model-selection.set`. Option values the new model also accepts are kept. Verified live in both directions: a change in cmux landed in T3, and a change in T3 showed in cmux.
   - When the agent asks questions (`user_input` requests), a card above the composer shows them one at a time. It shows the header, a progress count and option rows with 1–9 shortcuts, plus Back, Next/Submit for multi-select, and Skip when T3 allows it. Typing in the composer answers the current question with custom text. Answers go out as `runtime-request.respond` with `answers`, keyed by question id, using the option value or label, or an array for multi-select. Answered questions show in the transcript as the user's reply ("Header: answer").

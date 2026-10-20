@@ -6,7 +6,9 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
     case needsYou
     /// The thread's agent is working.
     case running
-    /// Nothing is running.
+    /// The agent finished and the user hasn't verified the result (settled the thread) yet.
+    case done
+    /// Nothing to do: settled, or a sub-thread with no runs of its own.
     case idle
 
     public static func < (lhs: T3ThreadStatus, rhs: T3ThreadStatus) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -16,12 +18,16 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
 
     /// The status of one thread. A pending request only counts while a run is
     /// active, so a stale request on a finished thread doesn't raise "needs you".
+    /// A finished thread is done until the user settles it.
     ///
     /// - Parameter thread: The thread.
     /// - Returns: Its status.
     public static func of(_ thread: T3Thread) -> T3ThreadStatus {
-        guard let run = thread.latestRunStatus, activeRunStatuses.contains(run) else { return .idle }
-        return thread.hasPendingRequest || run == "waiting" ? .needsYou : .running
+        guard let run = thread.latestRunStatus else { return .idle }
+        if activeRunStatuses.contains(run) {
+            return thread.hasPendingRequest || run == "waiting" ? .needsYou : .running
+        }
+        return thread.isSettled ? .idle : .done
     }
 }
 
@@ -52,7 +58,12 @@ public struct T3TaskNode: Identifiable, Hashable, Sendable {
 
     /// Sub-threads that are running or waiting on the user.
     public var liveSubThreadCount: Int {
-        subThreads.filter { T3ThreadStatus.of($0) != .idle }.count
+        subThreads.filter { T3ThreadStatus.of($0) < .done }.count
+    }
+
+    /// Whether the task finished since the user last looked at it.
+    public var hasUnseenResult: Bool {
+        status == .done && thread.hasUnseenResult
     }
 
     /// When the root thread or any sub-thread last changed.

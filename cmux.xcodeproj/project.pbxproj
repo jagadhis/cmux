@@ -143,6 +143,8 @@
 		C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */; };
 		80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */; };
 		1E46B226143109A448F863CE /* AgentHomeNewChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */; };
+		BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */; };
+		E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
 		C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */ = {isa = PBXBuildFile; fileRef = 044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */; };
@@ -4942,6 +4944,8 @@
 		1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedModel.swift; sourceTree = "<group>"; };
 		FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFirstLaunchDefaults.swift; sourceTree = "<group>"; };
 		D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeNewChatSheet.swift; sourceTree = "<group>"; };
+		CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsModel.swift; sourceTree = "<group>"; };
+		20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomePullRequestsView.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
 		044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3Model.swift; sourceTree = "<group>"; };
@@ -12468,6 +12472,8 @@
 				78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */,
 				D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */,
 				FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */,
+				CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */,
+				20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -15018,6 +15024,8 @@
 				C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */,
 				80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */,
 				1E46B226143109A448F863CE /* AgentHomeNewChatSheet.swift in Sources */,
+				BC614AB07DF3661F9EC23A9A /* AgentHomePullRequestsModel.swift in Sources */,
+				E19089B03D89CC30C3CD95F2 /* AgentHomePullRequestsView.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
 				C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */,

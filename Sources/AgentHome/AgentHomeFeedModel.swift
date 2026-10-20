@@ -64,6 +64,19 @@ final class AgentHomeTaskViewState {
 
     static let shared = AgentHomeTaskViewState()
 
+    /// Whether the main area shows the pull requests list instead of the selected task.
+    var showsPullRequests = false
+
+    /// A New chat waiting to be shown, with a project and text filled in.
+    struct NewChatRequest: Identifiable {
+        let id = UUID()
+        var projectId: String?
+        var text: String = ""
+    }
+
+    /// The New chat sheet's request, set by the sidebar button or "Review with agent".
+    var newChatRequest: NewChatRequest?
+
     private var overrides: [UUID: Mode] = [:]
 
     /// The task's mode: what the user last picked, else Overview for tasks

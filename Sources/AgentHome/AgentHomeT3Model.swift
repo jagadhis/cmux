@@ -10,6 +10,10 @@ import Observation
 /// cmux workspace: the thread's chat (the agent-chat sidecar's T3 view) on the
 /// left and a terminal in the task's folder on the right. Sub-threads open in
 /// the same workspace's chat.
+///
+/// Settled tasks (verified in T3 or here) aren't read unless open in cmux.
+/// A finished task is done until the user verifies it; verifying settles it in
+/// T3, closes its workspace and moves on to the next task waiting for review.
 @MainActor
 @Observable
 final class AgentHomeT3Model {
@@ -17,13 +21,30 @@ final class AgentHomeT3Model {
 
     /// T3 projects, most recently active first.
     private(set) var projects: [T3ProjectNode] = []
+    /// Every T3 project by name, including ones with no open work, for New chat.
+    private(set) var allProjects: [T3CodeStateReader.Project] = []
 
     /// The thread each T3 workspace's chat shows, by workspace id.
     private(set) var shownThreadIds: [UUID: String] = [:]
 
+    /// The task just verified, for the sidebar's undo toast.
+    private(set) var lastVerified: T3TaskNode?
+    /// A T3 command that failed, for the sidebar's toast.
+    private(set) var lastError: String?
+
     /// The workspace each opened task lives in, by root thread id.
     private var taskLinks: [String: UUID]
+    /// Tasks verified here that T3's database doesn't show as settled yet.
+    private var verifying: Set<String> = []
+    /// The tree as last read, before hiding tasks being verified.
+    private var readProjects: [T3ProjectNode] = []
+    private weak var tabManager: TabManager?
+    /// The sidecar's base URL as last returned. cmux runs one sidecar lookup at a
+    /// time and turns away a second, so thread actions reuse the last one.
+    private var knownSidecarBase: String?
+    private var lastVerifyAt = Date.distantPast
     private var refreshTask: Task<Void, Never>?
+    private var toastTask: Task<Void, Never>?
 
     private static let linksDefaultsKey = "agentHomeT3TaskWorkspaces"
     private static let refreshInterval: Duration = .seconds(3)
@@ -36,7 +57,8 @@ final class AgentHomeT3Model {
     // MARK: - Reading T3
 
     /// Starts reading T3's database every few seconds. Safe to call repeatedly.
-    func startIfNeeded() {
+    func startIfNeeded(tabManager: TabManager) {
+        self.tabManager = tabManager
         guard refreshTask == nil else { return }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -48,15 +70,37 @@ final class AgentHomeT3Model {
 
     /// Reads T3's database now.
     func reload() async {
-        let built = await Task.detached(priority: .utility) { () -> [T3ProjectNode]? in
+        let openTaskIds = Set(taskLinks.compactMap { id, workspace in
+            tabManager?.tabs.contains { $0.id == workspace } == true ? id : nil
+        })
+        let read = await Task.detached(priority: .utility) { () -> ([T3ProjectNode], [T3CodeStateReader.Project])? in
             let reader = T3CodeStateReader()
             guard FileManager.default.fileExists(atPath: reader.databaseURL.path),
-                  let threads = try? reader.activeThreads()
+                  let threads = try? reader.activeThreads(openTaskIds: openTaskIds)
             else { return nil }
-            return T3ThreadTree.build(threads)
+            return (T3ThreadTree.build(threads), (try? reader.projects()) ?? [])
         }.value
-        guard let built, built != projects else { return }
-        projects = built
+        guard let (built, all) = read else { return }
+        if all != allProjects { allProjects = all }
+        readProjects = built
+        // Stop hiding a verified task once T3 shows it settled or no longer lists it.
+        let listed = Dictionary(built.flatMap { $0.recentTasks + $0.olderTasks }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        verifying = verifying.filter { listed[$0].map { !$0.thread.isSettled } ?? false }
+        publish()
+    }
+
+    /// Publishes the tree, without tasks being verified or settled tasks that are no longer open.
+    private func publish() {
+        let visible = readProjects.compactMap { project -> T3ProjectNode? in
+            var project = project
+            let keep = { (task: T3TaskNode) in
+                !self.verifying.contains(task.id) && (!task.thread.isSettled || self.taskLinks[task.id] != nil)
+            }
+            project.recentTasks = project.recentTasks.filter(keep)
+            project.olderTasks = project.olderTasks.filter(keep)
+            return project.recentTasks.isEmpty && project.olderTasks.isEmpty ? nil : project
+        }
+        if visible != projects { projects = visible }
     }
 
     // MARK: - Lookups
@@ -99,7 +143,9 @@ final class AgentHomeT3Model {
     /// Opens a task, or one of its sub-threads, as a cmux task: creates the
     /// workspace on first open, then shows the thread in its chat.
     func open(_ task: T3TaskNode, thread: T3Thread? = nil, tabManager: TabManager) {
+        AgentHomeTaskViewState.shared.showsPullRequests = false
         let target = thread ?? task.thread
+        if target.hasUnseenResult { markSeen(target.id, tabManager: tabManager) }
         if let existing = workspaceId(forTask: task.id, tabManager: tabManager) {
             tabManager.focusTab(existing)
             if shownThreadIds[existing] != target.id {
@@ -177,10 +223,139 @@ final class AgentHomeT3Model {
     /// The sidecar's base URL with its token, ending in "/", starting the sidecar if needed.
     private func sidecarBase(tabManager: TabManager) async -> String? {
         guard let base = await AppDelegate.shared?.agentChatBrowserBaseURL(tabManager: tabManager, preferredWindow: NSApp.keyWindow) else {
-            return nil
+            return knownSidecarBase
         }
         let string = base.absoluteString
-        return string.hasSuffix("/") ? string : string + "/"
+        knownSidecarBase = string.hasSuffix("/") ? string : string + "/"
+        return knownSidecarBase
+    }
+
+    /// Opens a task by id, reading it from T3 when it isn't listed (a settled task).
+    func openTask(id taskId: String, threadId: String? = nil, tabManager: TabManager) {
+        func show(_ task: T3TaskNode) {
+            let thread = ([task.thread] + task.subThreads).first { $0.id == threadId }
+            open(task, thread: thread == task.thread ? nil : thread, tabManager: tabManager)
+        }
+        if let task = allTasks.first(where: { $0.id == taskId }) { return show(task) }
+        Task {
+            let task = await Task.detached(priority: .userInitiated) { () -> T3TaskNode? in
+                let threads = (try? T3CodeStateReader().activeThreads(openTaskIds: [taskId])) ?? []
+                return T3ThreadTree.build(threads).flatMap { $0.recentTasks + $0.olderTasks }.first { $0.id == taskId }
+            }.value
+            if let task { show(task) } else { NSSound.beep() }
+        }
+    }
+
+    // MARK: - Reviewing
+
+    /// Tasks whose agents finished and that wait for the user to verify them, in sidebar order.
+    var tasksToVerify: [T3TaskNode] { allTasks.filter { $0.status == .done } }
+
+    /// Marks a task verified: settles it in T3 (like T3's Settle), opens the
+    /// next task waiting for review if this one was on screen, and closes its
+    /// workspace. Undo puts it back with ``undoVerify(tabManager:)``.
+    func verify(_ task: T3TaskNode, tabManager: TabManager) {
+        // The next row slides under the pointer when a task leaves the list;
+        // a quick second click shouldn't verify it too.
+        guard Date().timeIntervalSince(lastVerifyAt) > 0.8 else { return }
+        lastVerifyAt = Date()
+        let workspaceId = workspaceId(forTask: task.id, tabManager: tabManager)
+        let wasOnScreen = workspaceId != nil && workspaceId == tabManager.selectedTabId
+        let next = tasksToVerify.first { $0.id != task.id }
+
+        verifying.insert(task.id)
+        publish()
+        showToast(verified: task)
+        if wasOnScreen, let next { open(next, tabManager: tabManager) }
+        if let workspaceId, let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }),
+           tabManager.closeWorkspaceWithConfirmation(workspace) {
+            taskLinks[task.id] = nil
+            shownThreadIds[workspaceId] = nil
+            UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
+        }
+
+        Task {
+            do {
+                try await threadAction(.settle, threadId: task.id, tabManager: tabManager)
+            } catch {
+                verifying.remove(task.id)
+                publish()
+                showToast(error: error.localizedDescription)
+            }
+            await reload()
+        }
+    }
+
+    /// Takes back the last verify: un-settles the task in T3 so it's listed again.
+    func undoVerify(tabManager: TabManager) {
+        guard let task = lastVerified else { return }
+        lastVerified = nil
+        verifying.remove(task.id)
+        Task {
+            do {
+                try await threadAction(.unsettle, threadId: task.id, tabManager: tabManager)
+            } catch {
+                showToast(error: error.localizedDescription)
+            }
+            await reload()
+        }
+    }
+
+    /// Tells T3 the user has seen a thread's latest result, here or in T3.
+    func markSeen(_ threadId: String, tabManager: TabManager) {
+        Task {
+            try? await threadAction(.visit, threadId: threadId, tabManager: tabManager)
+            await reload()
+        }
+    }
+
+    func dismissToast() {
+        toastTask?.cancel()
+        lastVerified = nil
+        lastError = nil
+    }
+
+    private func showToast(verified task: T3TaskNode? = nil, error: String? = nil) {
+        lastVerified = task
+        lastError = error
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.lastVerified = nil
+            self?.lastError = nil
+        }
+    }
+
+    private enum ThreadAction: String { case settle, unsettle, visit }
+
+    private func threadAction(_ action: ThreadAction, threadId: String, tabManager: TabManager) async throws {
+        do {
+            let base: String? = if let knownSidecarBase { knownSidecarBase } else { await sidecarBase(tabManager: tabManager) }
+            try await threadAction(action, threadId: threadId, base: base)
+        } catch is URLError {
+            // The sidecar restarted on another port: look it up again and retry once.
+            knownSidecarBase = nil
+            try await threadAction(action, threadId: threadId, base: sidecarBase(tabManager: tabManager))
+        } catch NewChatError.sidecarUnavailable {
+            // Another lookup was in flight; it's done in a moment.
+            try await Task.sleep(for: .milliseconds(600))
+            try await threadAction(action, threadId: threadId, base: sidecarBase(tabManager: tabManager))
+        }
+    }
+
+    private func threadAction(_ action: ThreadAction, threadId: String, base: String?) async throws {
+        guard let base,
+              let encoded = threadId.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))),
+              let endpoint = URL(string: "\(base)api/t3/threads/\(encoded)/\(action.rawValue)")
+        else { throw NewChatError.sidecarUnavailable }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            throw NewChatError.rejected(body?["error"] as? String ?? String(localized: "agentHome.t3.actionFailed", defaultValue: "T3 didn't take the change."))
+        }
     }
 
     // MARK: - New chat
@@ -213,7 +388,7 @@ final class AgentHomeT3Model {
         guard let threadId = body["threadId"] as? String else {
             throw NewChatError.rejected(body["error"] as? String ?? "T3 didn't start the thread.")
         }
-        let project = projects.first { $0.id == projectId }
+        let project = allProjects.first { $0.id == projectId }
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
         let thread = T3Thread(
             id: threadId,

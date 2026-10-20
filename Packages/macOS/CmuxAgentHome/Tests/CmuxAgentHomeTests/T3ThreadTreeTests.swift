@@ -7,13 +7,13 @@ import Testing
 
     func thread(
         _ id: String, project: String? = "oorva-app", parent: String? = nil, root: String? = nil,
-        run: String? = "completed", pending: Bool = false, daysAgo: Double = 0
+        run: String? = "completed", pending: Bool = false, daysAgo: Double = 0, settled: Bool = false
     ) -> T3Thread {
         T3Thread(
             id: id, projectId: project ?? "none", projectName: project, title: id, provider: "claudeAgent",
             updatedAt: now.addingTimeInterval(-daysAgo * 86_400),
             parentThreadId: parent, rootThreadId: root ?? parent, relationshipToParent: parent == nil ? nil : "subagent",
-            latestRunStatus: run, hasPendingRequest: pending
+            latestRunStatus: run, hasPendingRequest: pending, isSettled: settled
         )
     }
 
@@ -22,8 +22,37 @@ import Testing
         #expect(T3ThreadStatus.of(thread("a", run: "running", pending: true)) == .needsYou)
         #expect(T3ThreadStatus.of(thread("a", run: "waiting")) == .needsYou)
         // A stale pending request on a finished thread doesn't count.
-        #expect(T3ThreadStatus.of(thread("a", run: "completed", pending: true)) == .idle)
+        #expect(T3ThreadStatus.of(thread("a", run: "completed", pending: true)) == .done)
         #expect(T3ThreadStatus.of(thread("a", run: nil)) == .idle)
+    }
+
+    @Test func finishedThreadsAreDoneUntilSettled() {
+        #expect(T3ThreadStatus.of(thread("a", run: "completed")) == .done)
+        #expect(T3ThreadStatus.of(thread("a", run: "failed")) == .done)
+        #expect(T3ThreadStatus.of(thread("a", run: "completed", settled: true)) == .idle)
+        // A settled thread that runs again is live again.
+        #expect(T3ThreadStatus.of(thread("a", run: "running", settled: true)) == .running)
+        #expect(thread("a", run: "interrupted").latestRunEndedEarly)
+        #expect(!thread("a", run: "completed").latestRunEndedEarly)
+    }
+
+    @Test func unseenResultsCompareCompletionWithTheLastVisit() {
+        var seen = thread("a")
+        seen.latestRunCompletedAt = now
+        seen.lastVisitedAt = now.addingTimeInterval(60)
+        #expect(!seen.hasUnseenResult)
+        var unseen = seen
+        unseen.lastVisitedAt = now.addingTimeInterval(-60)
+        #expect(unseen.hasUnseenResult)
+        #expect(T3TaskNode(thread: unseen).hasUnseenResult)
+        // Never visited: T3 doesn't count it as unseen either.
+        unseen.lastVisitedAt = nil
+        #expect(!unseen.hasUnseenResult)
+        // Settled results aren't waiting on anyone.
+        var settled = seen
+        settled.lastVisitedAt = now.addingTimeInterval(-60)
+        settled.isSettled = true
+        #expect(!T3TaskNode(thread: settled).hasUnseenResult)
     }
 
     @Test func subThreadsNestUnderTheirRoot() {
@@ -55,12 +84,14 @@ import Testing
 
     @Test func quietOldTasksAreOlderAndLiveOnesStayRecent() {
         let projects = T3ThreadTree.build([
-            thread("fresh", daysAgo: 1),
-            thread("old", daysAgo: 30),
+            thread("fresh", daysAgo: 1, settled: true),
+            thread("old", daysAgo: 30, settled: true),
             thread("old-but-running", run: "running", daysAgo: 30),
             thread("waiting", run: "running", pending: true, daysAgo: 3),
+            thread("old-unverified", daysAgo: 30),
         ], now: now)
-        #expect(projects[0].recentTasks.map(\.id) == ["waiting", "old-but-running", "fresh"])
+        // Unverified results stay in view however old they are.
+        #expect(projects[0].recentTasks.map(\.id) == ["waiting", "old-but-running", "old-unverified", "fresh"])
         #expect(projects[0].olderTasks.map(\.id) == ["old"])
     }
 

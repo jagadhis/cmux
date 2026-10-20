@@ -26,6 +26,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
     /// Whether Overview is showing for the selected workspace, so its terminals should be hidden.
     @MainActor
     static func hidesSelectedWorkspace(isActive: Bool, tabManager: TabManager) -> Bool {
+        if isActive && AgentHomeTaskViewState.shared.showsPullRequests { return true }
         guard isActive,
               let selectedId = tabManager.selectedTabId,
               let workspace = tabManager.tabs.first(where: { $0.id == selectedId })
@@ -42,8 +43,11 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
         let t3Task: T3TaskNode? = isActive ? tabManager.selectedTabId.flatMap(t3Model.task(forWorkspace:)) : nil
         let mode = task.map(viewState.mode(for:)) ?? .sessions
 
+        let showsPullRequests = isActive && viewState.showsPullRequests
         VStack(spacing: 0) {
-            if let task, let t3Task {
+            if showsPullRequests {
+                EmptyView()
+            } else if let task, let t3Task {
                 let shownId = t3Model.shownThreadIds[task.id] ?? t3Task.thread.id
                 AgentHomeT3TaskHeader(
                     task: t3Task,
@@ -51,7 +55,8 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
                     shownSubThread: t3Task.subThreads.first { $0.id == shownId },
                     mode: mode,
                     onModeChange: { viewState.setMode($0, for: task.id) },
-                    onOpenRoot: { t3Model.open(t3Task, tabManager: tabManager) }
+                    onOpenRoot: { t3Model.open(t3Task, tabManager: tabManager) },
+                    onVerify: { t3Model.verify(t3Task, tabManager: tabManager) }
                 )
             } else if let task {
                 let group = workspaceGroup(of: task)
@@ -65,7 +70,21 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             }
             ZStack {
                 content
-                if let task, mode == .overview {
+                if showsPullRequests {
+                    AgentHomePullRequestsView(
+                        tabManager: tabManager,
+                        onReviewWithAgent: { pullRequest in
+                            viewState.newChatRequest = .init(
+                                projectId: AgentHomePullRequestsModel.shared.project(for: pullRequest)?.id,
+                                text: AgentHomePullRequestsModel.reviewPrompt(for: pullRequest)
+                            )
+                        },
+                        onOpenThread: { link in
+                            t3Model.openTask(id: link.taskId, threadId: link.threadId, tabManager: tabManager)
+                        }
+                    )
+                    .transition(.opacity)
+                } else if let task, mode == .overview {
                     if let t3Task {
                         AgentHomeT3Overview(task: t3Task, shownThreadId: t3Model.shownThreadIds[task.id]) { thread in
                             viewState.setMode(.sessions, for: task.id)
@@ -82,11 +101,12 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: mode)
+        .animation(.easeOut(duration: 0.18), value: showsPullRequests)
         .task(id: isActive ? feedModel.resolutionToken : -1) {
             guard isActive else { return }
             await feedModel.resolveTargets(for: feedModel.workstreamIDs)
         }
-        .onAppear { if isActive { t3Model.startIfNeeded() } }
+        .onAppear { if isActive { t3Model.startIfNeeded(tabManager: tabManager) } }
     }
 
     private func selectedTask() -> AgentHomeTask? {
@@ -232,6 +252,7 @@ private struct AgentHomeT3TaskHeader: View {
     let mode: AgentHomeTaskViewState.Mode
     let onModeChange: (AgentHomeTaskViewState.Mode) -> Void
     let onOpenRoot: () -> Void
+    let onVerify: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -270,15 +291,8 @@ private struct AgentHomeT3TaskHeader: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            HStack(spacing: 5) {
-                Circle().fill(AgentHomePalette.done).frame(width: 6, height: 6)
-                Text(String(localized: "agentHome.t3.synced", defaultValue: "Synced with T3"))
-            }
-            .font(.system(size: 11.5))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(Color.primary.opacity(0.05)))
+            AgentHomeT3StatusBar(task: task, onVerify: onVerify)
+                .animation(.easeOut(duration: 0.2), value: task.status)
         }
         .font(.system(size: 13))
         .padding(.horizontal, 18)
@@ -298,7 +312,7 @@ private struct AgentHomeT3Overview: View {
 
     var body: some View {
         let sessions = [task.thread] + task.subThreads
-        let live = sessions.filter { T3ThreadStatus.of($0) != .idle }.count
+        let live = sessions.filter { T3ThreadStatus.of($0) < .done }.count
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 7) {
@@ -348,7 +362,11 @@ private struct AgentHomeT3SessionCard: View {
                         Text(subtitle).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 6)
-                    AgentHomeStatePill(state: status == .needsYou ? .needsYou : status == .running ? .running : .idle)
+                    if status == .done {
+                        AgentHomeT3StatusDot(status: status, unseen: thread.hasUnseenResult, endedEarly: thread.latestRunEndedEarly)
+                    } else {
+                        AgentHomeStatePill(state: status == .needsYou ? .needsYou : status == .running ? .running : .idle)
+                    }
                 }
             }
             .padding(.horizontal, 14)
@@ -362,7 +380,7 @@ private struct AgentHomeT3SessionCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
-        .opacity(status == .idle && !isMain ? 0.75 : 1)
+        .opacity(status >= .done && !isMain ? 0.75 : 1)
     }
 
     private var kind: AgentHomeAgentKind { thread.agentKind }

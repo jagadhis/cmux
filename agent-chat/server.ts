@@ -18,7 +18,7 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
-import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, t3Adapter, t3ModelCatalog, t3ModelSelection } from "./adapters/t3";
+import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, t3Adapter, t3ModelCatalog, t3ModelSelection, t3ThreadAction } from "./adapters/t3";
 import type { T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
@@ -2299,6 +2299,19 @@ function startServer() {
         return Response.json({ threadId, path: prefixedPath(`/t3/${encodeURIComponent(threadId)}`) });
       } catch (err) {
         return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
+      }
+    }
+    // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
+    const t3Action = url.pathname.match(/^\/api\/t3\/threads\/([^/?#]{8,1600})\/(settle|unsettle|visit)$/);
+    if (t3Action && req.method === "POST") {
+      let threadId = "";
+      try { threadId = decodeURIComponent(t3Action[1]); } catch { /* malformed escape */ }
+      if (!isT3ThreadId(threadId)) return Response.json({ error: "Not a T3 thread id" }, { status: 404 });
+      try {
+        await t3ThreadAction(threadId, t3Action[2] as "settle" | "unsettle" | "visit");
+        return Response.json({ ok: true });
+      } catch (err) {
+        return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
       }
     }
     const t3Match = url.pathname.match(/^\/t3\/([^/?#]{8,1600})\/?$/);

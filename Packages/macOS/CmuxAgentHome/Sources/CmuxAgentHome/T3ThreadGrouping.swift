@@ -64,6 +64,12 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     public var latestRunStatus: String?
     /// Whether the thread has a request waiting on the user.
     public var hasPendingRequest: Bool
+    /// When the thread's latest run finished, if it has.
+    public var latestRunCompletedAt: Date?
+    /// When the user last looked at the thread, in T3 or in cmux.
+    public var lastVisitedAt: Date?
+    /// Whether the user settled the thread in T3 (marked it verified).
+    public var isSettled: Bool
 
     /// Creates a T3 thread.
     ///
@@ -84,6 +90,9 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     ///   - relationshipToParent: How this thread relates to its parent.
     ///   - latestRunStatus: The status of the thread's latest run.
     ///   - hasPendingRequest: Whether a request is waiting on the user.
+    ///   - latestRunCompletedAt: When the latest run finished.
+    ///   - lastVisitedAt: When the user last looked at the thread.
+    ///   - isSettled: Whether the user settled the thread.
     public init(
         id: String,
         projectId: String,
@@ -100,7 +109,10 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         rootThreadId: String? = nil,
         relationshipToParent: String? = nil,
         latestRunStatus: String? = nil,
-        hasPendingRequest: Bool = false
+        hasPendingRequest: Bool = false,
+        latestRunCompletedAt: Date? = nil,
+        lastVisitedAt: Date? = nil,
+        isSettled: Bool = false
     ) {
         self.id = id
         self.projectId = projectId
@@ -118,6 +130,21 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         self.relationshipToParent = relationshipToParent
         self.latestRunStatus = latestRunStatus
         self.hasPendingRequest = hasPendingRequest
+        self.latestRunCompletedAt = latestRunCompletedAt
+        self.lastVisitedAt = lastVisitedAt
+        self.isSettled = isSettled
+    }
+
+    /// Whether the latest run finished after the user last looked, as T3 counts it.
+    /// A thread T3 has never recorded a visit for doesn't count.
+    public var hasUnseenResult: Bool {
+        guard let completed = latestRunCompletedAt, let visited = lastVisitedAt else { return false }
+        return completed > visited
+    }
+
+    /// Whether the latest run ended without finishing: failed, interrupted or cancelled.
+    public var latestRunEndedEarly: Bool {
+        ["failed", "interrupted", "cancelled"].contains(latestRunStatus ?? "")
     }
 
     /// The agent behind the thread, from its provider instance id.

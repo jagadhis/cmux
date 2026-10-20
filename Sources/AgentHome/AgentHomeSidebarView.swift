@@ -11,7 +11,8 @@ struct AgentHomeSidebarView: View {
 
     /// Projects whose T3 tasks are all shown, keyed by group id or T3 project id.
     @State private var expandedT3Lists: Set<String> = []
-    @State private var isNewChatPresented = false
+    @Bindable private var viewState = AgentHomeTaskViewState.shared
+    private let pullRequests = AgentHomePullRequestsModel.shared
     /// Collapsed T3-only projects (cmux projects use the group's own collapsed flag).
     @AppStorage("agentHomeCollapsedT3Projects") private var collapsedT3ProjectsRaw = ""
 
@@ -27,13 +28,22 @@ struct AgentHomeSidebarView: View {
         )
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 1) {
-                AgentHomeNewChatButton { isNewChatPresented = true }
-                    .padding(.bottom, 8)
+                AgentHomeNewChatButton {
+                    viewState.newChatRequest = .init(projectId: layout.selectedTask.flatMap { t3Model.project(of: $0)?.id })
+                }
+                .padding(.bottom, 8)
 
                 ForEach(AgentHomeFilter.allCases, id: \.self) { filter in
                     AgentHomeFilterRow(filter: filter, count: snapshot.count(of: filter) + layout.t3Count(filter)) {
                         jump(to: filter, in: snapshot, layout: layout)
                     }
+                }
+                AgentHomePullRequestsSidebarRow(
+                    isSelected: viewState.showsPullRequests,
+                    reviewCount: pullRequests.inbox?.toReview.count ?? 0,
+                    actionableCount: pullRequests.inbox?.mine.filter { $0.nextStep.isActionable }.count ?? 0
+                ) {
+                    withAnimation(.easeOut(duration: 0.18)) { viewState.showsPullRequests.toggle() }
                 }
 
                 if !snapshot.projects.isEmpty || !layout.t3OnlyProjects.isEmpty {
@@ -48,7 +58,10 @@ struct AgentHomeSidebarView: View {
                             isSelected: project.home.map { $0.id == tabManager.selectedTabId } ?? false,
                             isCollapsed: isCollapsed,
                             hiddenT3Count: t3Project.map { $0.recentTasks.count + $0.olderTasks.count } ?? 0,
-                            onOpen: { if let home = project.home { tabManager.focusTab(home.id) } },
+                            onOpen: {
+                                viewState.showsPullRequests = false
+                                if let home = project.home { tabManager.focusTab(home.id) }
+                            },
                             onToggleCollapsed: {
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     tabManager.toggleWorkspaceGroupCollapsed(groupId: project.id)
@@ -97,11 +110,34 @@ struct AgentHomeSidebarView: View {
             .padding(.vertical, 6)
         }
         .scrollIndicators(.never)
-        .onAppear { t3Model.startIfNeeded() }
-        .sheet(isPresented: $isNewChatPresented) {
+        .overlay(alignment: .bottom) {
+            if t3Model.lastVerified != nil || t3Model.lastError != nil {
+                AgentHomeT3Toast(
+                    verified: t3Model.lastVerified,
+                    error: t3Model.lastError,
+                    onUndo: { t3Model.undoVerify(tabManager: tabManager) },
+                    onDismiss: { t3Model.dismissToast() }
+                )
+                .padding(10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: t3Model.lastVerified?.id)
+        .animation(.easeOut(duration: 0.2), value: t3Model.lastError)
+        .animation(.easeOut(duration: 0.22), value: layout.allTasks.map(\.id))
+        // A run that finishes while its chat is on screen has been seen.
+        .onChange(of: unseenShownThreadId(layout: layout)) { _, threadId in
+            if let threadId { t3Model.markSeen(threadId, tabManager: tabManager) }
+        }
+        .onAppear {
+            t3Model.startIfNeeded(tabManager: tabManager)
+            pullRequests.startIfNeeded()
+        }
+        .sheet(item: $viewState.newChatRequest) { request in
             AgentHomeNewChatSheet(
-                projects: t3Model.projects.filter { !$0.id.isEmpty },
-                preselectedProjectId: layout.selectedTask.flatMap { t3Model.project(of: $0)?.id },
+                projects: t3Model.allProjects.map { T3ProjectNode(id: $0.id, name: $0.name, root: $0.root, recentTasks: [], olderTasks: []) },
+                preselectedProjectId: request.projectId,
+                initialText: request.text,
                 onStart: { projectId, text in
                     try await t3Model.startNewChat(projectId: projectId, text: text, tabManager: tabManager)
                 }
@@ -124,7 +160,7 @@ struct AgentHomeSidebarView: View {
             switch filter {
             case .needsYou: return allTasks.filter { $0.status == .needsYou }.count
             case .running: return allTasks.filter { $0.status == .running }.count
-            case .readyForReview: return 0
+            case .readyForReview: return allTasks.filter { $0.status == .done }.count
             }
         }
     }
@@ -156,12 +192,15 @@ struct AgentHomeSidebarView: View {
         ForEach(visible) { task in
             let isSelectedTask = layout.selectedTask?.id == task.id
             let shown = isSelectedTask ? (layout.shownThreadId ?? task.thread.id) : nil
-            AgentHomeT3TaskRow(task: task, isSelected: shown == task.thread.id) {
-                t3Model.open(task, tabManager: tabManager)
-            }
+            AgentHomeT3TaskRow(
+                task: task,
+                isSelected: shown == task.thread.id,
+                onOpen: { t3Model.open(task, tabManager: tabManager) },
+                onVerify: { t3Model.verify(task, tabManager: tabManager) }
+            )
             let subThreads = isSelectedTask
                 ? Array(task.subThreads.prefix(Self.collapsedSubThreadCount))
-                : task.subThreads.filter { T3ThreadStatus.of($0) != .idle }
+                : task.subThreads.filter { T3ThreadStatus.of($0) < .done }
             ForEach(subThreads, id: \.id) { subThread in
                 AgentHomeT3SubThreadRow(thread: subThread, isSelected: shown == subThread.id) {
                     t3Model.open(task, thread: subThread, tabManager: tabManager)
@@ -178,6 +217,14 @@ struct AgentHomeSidebarView: View {
     }
 
     // MARK: - Helpers
+
+    /// The thread on screen in the selected T3 task, when it has a result the user hasn't seen.
+    private func unseenShownThreadId(layout: T3Layout) -> String? {
+        guard let task = layout.selectedTask else { return nil }
+        let shownId = layout.shownThreadId ?? task.thread.id
+        let shown = ([task.thread] + task.subThreads).first { $0.id == shownId }
+        return shown?.hasUnseenResult == true ? shownId : nil
+    }
 
     private var collapsedGroupIds: Set<UUID> {
         Set(tabManager.workspaceGroups.filter(\.isCollapsed).map(\.id))
@@ -200,6 +247,7 @@ struct AgentHomeSidebarView: View {
             indented: indented,
             shortcut: shortcut
         ) {
+            viewState.showsPullRequests = false
             tabManager.focusTab(task.id)
         }
     }
@@ -211,13 +259,16 @@ struct AgentHomeSidebarView: View {
         var stops = snapshot.tasks(matching: filter).map { task in
             Stop(key: task.id.uuidString) { tabManager.focusTab(task.id) }
         }
-        let wanted: T3ThreadStatus? = filter == .needsYou ? .needsYou : filter == .running ? .running : nil
-        if let wanted {
-            stops += layout.allTasks.filter { $0.status == wanted }.map { task in
-                Stop(key: "t3:\(task.id)") { t3Model.open(task, tabManager: tabManager) }
-            }
+        let wanted: T3ThreadStatus = switch filter {
+        case .needsYou: .needsYou
+        case .running: .running
+        case .readyForReview: .done
+        }
+        stops += layout.allTasks.filter { $0.status == wanted }.map { task in
+            Stop(key: "t3:\(task.id)") { t3Model.open(task, tabManager: tabManager) }
         }
         guard !stops.isEmpty else { return }
+        viewState.showsPullRequests = false
         let currentKey = layout.selectedTask.map { "t3:\($0.id)" } ?? tabManager.selectedTabId?.uuidString
         let index = stops.firstIndex { $0.key == currentKey }.map { ($0 + 1) % stops.count } ?? 0
         stops[index].open()
@@ -280,7 +331,7 @@ private struct AgentHomeFilterRow: View {
     private var title: String {
         switch filter {
         case .needsYou: return String(localized: "agentHome.filter.needsYou", defaultValue: "Needs you")
-        case .running: return String(localized: "agentHome.filter.running", defaultValue: "Running")
+        case .running: return String(localized: "agentHome.filter.working", defaultValue: "Working")
         case .readyForReview: return String(localized: "agentHome.filter.readyForReview", defaultValue: "Ready for review")
         }
     }

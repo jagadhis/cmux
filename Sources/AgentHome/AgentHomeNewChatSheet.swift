@@ -6,6 +6,7 @@ import SwiftUI
 struct AgentHomeNewChatSheet: View {
     let projects: [T3ProjectNode]
     let preselectedProjectId: String?
+    var initialText = ""
     let onStart: (_ projectId: String, _ text: String) async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -81,6 +82,7 @@ struct AgentHomeNewChatSheet: View {
         .padding(20)
         .frame(width: 520)
         .onAppear {
+            if text.isEmpty { text = initialText }
             projectId = preselectedProjectId.flatMap { id in projects.contains { $0.id == id } ? id : nil }
                 ?? projects.first?.id ?? ""
             isEditorFocused = true

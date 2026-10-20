@@ -291,6 +291,15 @@ export async function setT3Model(sess: SessionCtx, selection: { instanceId: stri
   await dispatch({ type: "thread.model-selection.set", threadId: threadIdOf(sess), modelSelection: selection });
 }
 
+/** Thread actions Agent Home's sidebar sends: settle (mark verified), unsettle (undo), visit (seen). */
+export type T3ThreadAction = "settle" | "unsettle" | "visit";
+
+export async function t3ThreadAction(threadId: string, action: T3ThreadAction) {
+  if (action === "settle") await dispatch({ type: "thread.settle", threadId });
+  else if (action === "unsettle") await dispatch({ type: "thread.unsettle", threadId, reason: "user" });
+  else await dispatch({ type: "thread.visit", threadId, visitedAt: new Date().toISOString() });
+}
+
 export function t3ModelSelection(sess: SessionCtx): T3ModelSelection | null {
   return state(sess)?.modelSelection ?? null;
 }
