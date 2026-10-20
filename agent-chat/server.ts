@@ -2257,11 +2257,13 @@ function startServer() {
     }
     if (url.pathname === "/api/t3/threads" && req.method === "POST") {
       try {
-        const body = (await req.json()) as { projectId?: unknown; text?: unknown };
+        const body = (await req.json()) as { projectId?: unknown; text?: unknown; runtimeMode?: unknown };
+        const runtimeModes = ["approval-required", "auto-accept-edits", "auto", "full-access"];
+        const runtimeMode = typeof body.runtimeMode === "string" && runtimeModes.includes(body.runtimeMode) ? body.runtimeMode : undefined;
         if (typeof body.projectId !== "string" || typeof body.text !== "string") {
           return Response.json({ error: "projectId and text are required" }, { status: 400 });
         }
-        const { threadId } = await launchT3Thread({ projectId: body.projectId, text: body.text });
+        const { threadId } = await launchT3Thread({ projectId: body.projectId, text: body.text, runtimeMode });
         return Response.json({ threadId, path: prefixedPath(`/t3/${encodeURIComponent(threadId)}`) });
       } catch (err) {
         return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });

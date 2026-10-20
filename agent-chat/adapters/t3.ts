@@ -243,7 +243,7 @@ function launchDefaults(projectId: string): { modelSelection: unknown; runtimeMo
 }
 
 /** Starts a new T3 thread in a project with a first message; T3 names it. */
-export async function launchT3Thread(input: { projectId: string; text: string }): Promise<{ threadId: string }> {
+export async function launchT3Thread(input: { projectId: string; text: string; runtimeMode?: string }): Promise<{ threadId: string }> {
   const text = input.text.trim();
   if (!text) throw new Error("Type what the agent should do.");
   const defaults = launchDefaults(input.projectId);
@@ -255,7 +255,7 @@ export async function launchT3Thread(input: { projectId: string; text: string })
     title: firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine,
     generateTitle: true,
     modelSelection: defaults.modelSelection,
-    runtimeMode: defaults.runtimeMode,
+    runtimeMode: input.runtimeMode ?? defaults.runtimeMode,
     interactionMode: defaults.interactionMode,
     workspaceStrategy: { type: "root" },
     initialMessage: { text, attachments: [] },
