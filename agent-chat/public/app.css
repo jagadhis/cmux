@@ -749,6 +749,56 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 .t3-request-btn.primary { background: var(--text); color: var(--bg); }
 .t3-request-btn.primary:hover { filter: brightness(1.08); }
 .t3-request-btn:active { transform: scale(0.97); }
+/* T3 threads: model controls in the composer row, and the question card. */
+.t3-model-controls { display: flex; align-items: center; gap: 2px; min-width: 0; margin-left: -6px; }
+.t3-model-controls + .transcript-hint { margin-left: auto; }
+.t3-model-controls .provider-model-trigger { max-width: 220px; }
+.t3-model-menu { width: 300px; max-height: min(420px, 70vh); display: flex; flex-direction: column; overflow: hidden; }
+.t3-model-menu .cmdk-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+.t3-question {
+  position: absolute; left: 24px; right: 24px; bottom: calc(100% + 7px); z-index: 3;
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 10px 10px 14px; border-radius: 12px;
+  max-height: min(60vh, 460px); overflow-y: auto;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-input));
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 40%, transparent), 0 10px 26px color-mix(in srgb, #000 26%, transparent);
+  color: var(--text); font: 400 calc(var(--font-size-base) - 1.5px) var(--font-sans);
+  animation: t3-request-in 180ms ease-out;
+}
+.t3-question-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.t3-question-header {
+  font: 600 calc(var(--font-size-base) - 3px) var(--font-sans); letter-spacing: .02em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+.t3-question-progress { color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: calc(var(--font-size-base) - 3px); }
+.t3-question-spacer { flex: 1; }
+.t3-question-skip {
+  border: 0; background: transparent; color: var(--text-faint); cursor: default; padding: 2px 6px; border-radius: 6px;
+  font: 400 calc(var(--font-size-base) - 2.5px) var(--font-sans);
+}
+.t3-question-skip:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.t3-question-text { font-weight: 500; line-height: 1.45; white-space: pre-wrap; }
+.t3-question-hint { color: var(--text-faint); font-size: calc(var(--font-size-base) - 2.5px); margin-top: -4px; }
+.t3-question-options { display: flex; flex-direction: column; gap: 2px; animation: t3-question-swap 160ms ease-out; }
+@keyframes t3-question-swap { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: none; } }
+.t3-question-option {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px 7px 10px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--text); text-align: left; cursor: default;
+  transition: background-color 120ms ease-out, transform 120ms ease-out;
+}
+.t3-question-option:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.t3-question-option:active { transform: scale(.99); }
+.t3-question-option.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.t3-question-option-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.t3-question-option-label { font: 500 calc(var(--font-size-base) - 1.5px) var(--font-sans); }
+.t3-question-option-desc { color: var(--text-faint); font: 400 calc(var(--font-size-base) - 2.5px) var(--font-sans); line-height: 1.4; }
+.t3-question-option kbd {
+  flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
+  color: var(--text-faint); background: color-mix(in srgb, var(--text) 6%, transparent);
+  font: 500 calc(var(--font-size-base) - 4px) var(--font-sans); font-variant-numeric: tabular-nums;
+}
+.t3-question-check { flex: none; display: inline-flex; width: 18px; justify-content: center; color: var(--accent); }
+.t3-request-btn:disabled { opacity: .45; }
+@media (prefers-reduced-motion: reduce) { .t3-question, .t3-question-options { animation: none; } }
 #chat-card {
   display: flex; flex-direction: column; gap: 6px; padding: 6px;
   background: var(--bg-input); border: 0; border-radius: 14px;
@@ -874,6 +924,8 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 .gallery-label {
   margin: 0 0 5px; color: var(--text-faint); font: 400 calc(var(--font-size-code) - 1.5px) var(--font-mono);
 }
+.gallery-t3-composer { position: relative; padding-top: 330px; }
+.gallery-t3-composer #chat-input-row { padding: 10px 0 8px; }
 .gallery-composer-wrap {
   display: flex; flex-direction: column; gap: 5px; align-items: stretch;
 }

@@ -6,16 +6,26 @@
 // deltas, tool starts and ends, and a `done` when a run finishes. If an item
 // that was already shown disappears (a rollback), it asks for a reset and
 // the history is replayed from scratch.
+//
+// It also reports what the composer needs: the thread's model selection and
+// the request T3 is waiting on (an approval, or questions with options).
 
 import type { AgentEvent, SessionStatus } from "../types";
 
 /** The subset of a T3 projection this module reads. Field names follow T3's contracts. */
 export interface T3Projection {
-  thread: { id: string; title: string; worktreePath?: string | null; modelSelection?: { model?: string } };
+  thread: { id: string; title: string; worktreePath?: string | null; modelSelection?: T3ModelSelection };
   runs: T3Run[];
   messages: { id: string; role: string; text: string }[];
   turnItems: T3TurnItem[];
   runtimeRequests: T3RuntimeRequest[];
+}
+
+/** T3's model selection: a provider instance, a model, and its option values. */
+export interface T3ModelSelection {
+  instanceId?: string;
+  model?: string;
+  options?: { id: string; value: string | boolean }[];
 }
 
 export interface T3Run {
@@ -36,12 +46,36 @@ export interface T3TurnItem {
   input?: unknown;
   toolName?: string;
   summary?: string;
+  /** `user_input_request` and `approval_request` items name their request. */
+  requestId?: string;
+  questions?: T3Question[];
+  /** A `user_input_request`'s answers once given. */
+  questionAnswer?: { answers?: Record<string, unknown> };
+  prompt?: string;
+}
+
+export interface T3QuestionOption {
+  label: string;
+  description?: string;
+  value?: string;
+}
+
+export interface T3Question {
+  id: string;
+  header: string;
+  question: string;
+  options: T3QuestionOption[];
+  multiSelect?: boolean;
+  allowCustomAnswer?: boolean;
+  initialAnswer?: string;
 }
 
 export interface T3RuntimeRequest {
   id: string;
   kind: string;
   status: string;
+  responseCapability?: { type: string };
+  answers?: Record<string, unknown>;
 }
 
 /** A pending request the chat shows as an approval card. */
@@ -50,8 +84,14 @@ export interface T3PendingRequest {
   kind: string;
   title: string;
   detail?: string;
-  /** Approval requests take a decision; questions are answered in T3. */
+  /** Approval requests take a decision; questions take answers. */
   isApproval: boolean;
+  /** For `user_input`: the questions, answered in order. */
+  questions?: T3Question[];
+  /** False when the agent can no longer take the answer here (answer it in T3). */
+  answerable: boolean;
+  /** Questions T3 lets the user skip without answering. */
+  dismissible: boolean;
 }
 
 export interface T3Step {
@@ -62,6 +102,7 @@ export interface T3Step {
   title: string;
   cwd?: string;
   model?: string;
+  modelSelection?: T3ModelSelection;
   request: T3PendingRequest | null;
   /** The active run, for interrupts and steering. */
   activeRunId?: string;
@@ -84,6 +125,7 @@ export class T3Timeline {
   private doneShown = new Set<string>();
   private items = new Map<string, ItemCursor>();
   private notified = new Set<string>();
+  private answered = new Set<string>();
 
   /** Emits what changed since the last projection. */
   step(projection: T3Projection): T3Step {
@@ -100,6 +142,7 @@ export class T3Timeline {
       itemsByRun.set(item.runId, list);
     }
 
+    const requests = new Map(projection.runtimeRequests.map((r) => [r.id, r]));
     for (const run of runs) {
       if (run.status === "rolled_back") continue;
       if (!this.userShown.has(run.id)) {
@@ -108,7 +151,7 @@ export class T3Timeline {
         this.userShown.add(run.id);
       }
       for (const item of (itemsByRun.get(run.id) ?? []).sort((a, b) => a.ordinal - b.ordinal)) {
-        events.push(...this.itemEvents(item));
+        events.push(...this.itemEvents(item, requests));
       }
       if (FINISHED_RUN.has(run.status) && !this.doneShown.has(run.id)) {
         if (run.status === "failed") events.push({ kind: "error", message: "The run failed in T3." });
@@ -125,12 +168,13 @@ export class T3Timeline {
       title: projection.thread.title,
       cwd: projection.thread.worktreePath ?? undefined,
       model: projection.thread.modelSelection?.model,
+      modelSelection: projection.thread.modelSelection,
       request: pendingRequest(projection),
       activeRunId: activeRun?.id,
     };
   }
 
-  private itemEvents(item: T3TurnItem): AgentEvent[] {
+  private itemEvents(item: T3TurnItem, requests: Map<string, T3RuntimeRequest>): AgentEvent[] {
     const cursor = this.items.get(item.id) ?? { textLength: 0, started: false, ended: false };
     this.items.set(item.id, cursor);
     const events: AgentEvent[] = [];
@@ -153,6 +197,19 @@ export class T3Timeline {
       if (FINISHED_ITEM.has(item.status) && !cursor.ended) {
         events.push({ kind: "tool-end", toolId: item.id, ok: item.status === "completed" });
         cursor.ended = true;
+      }
+      return events;
+    }
+
+    if (item.type === "user_input_request" && !this.answered.has(item.id)) {
+      // T3 records the answers on the item; older threads only on the request.
+      const request = item.requestId ? requests.get(item.requestId) : undefined;
+      const answers = item.questionAnswer?.answers ?? (request?.status === "resolved" ? request.answers : undefined);
+      if (answers) {
+        // The user's answer reads as their reply, between the question and what the agent did with it.
+        const lines = answerLines(item.questions ?? [], answers);
+        if (lines.length) events.push({ kind: "user", text: lines.join("\n") });
+        this.answered.add(item.id);
       }
       return events;
     }
@@ -183,6 +240,7 @@ export class T3Timeline {
     this.doneShown.clear();
     this.items.clear();
     this.notified.clear();
+    this.answered.clear();
   }
 }
 
@@ -250,16 +308,50 @@ const REQUEST_TITLES: Record<string, string> = {
 function pendingRequest(projection: T3Projection): T3PendingRequest | null {
   const request = [...projection.runtimeRequests].reverse().find((r) => r.status === "pending");
   if (!request) return null;
-  const isApproval = !["user_input", "auth_refresh", "mcp-elicitation"].includes(request.kind);
+  const capability = request.responseCapability?.type ?? "live";
+  const title = REQUEST_TITLES[request.kind] ?? "Needs your input";
+  const requestItem = [...projection.turnItems].reverse().find((i) => i.requestId === request.id);
+
+  if (request.kind === "user_input") {
+    const questions = requestItem?.type === "user_input_request" ? requestItem.questions ?? [] : [];
+    return {
+      id: request.id,
+      kind: request.kind,
+      title,
+      isApproval: false,
+      questions: questions.map((q) => ({ ...q, multiSelect: q.multiSelect ?? false })),
+      answerable: questions.length > 0 && capability !== "not_resumable",
+      dismissible: capability === "message",
+    };
+  }
+
+  // Like T3, sign-ins and dynamic tool calls aren't decided with allow/deny.
+  const isApproval = !["auth_refresh", "dynamic_tool_call", "mcp-elicitation"].includes(request.kind);
   // The tool the agent is waiting on is the latest unfinished tool item.
   const waitingItem = [...projection.turnItems]
     .filter((i) => TOOL_ITEMS.has(i.type) && !FINISHED_ITEM.has(i.status))
     .sort((a, b) => b.ordinal - a.ordinal)[0];
+  const prompt = requestItem?.type === "approval_request" ? requestItem.prompt?.trim() : undefined;
   return {
     id: request.id,
     kind: request.kind,
-    title: REQUEST_TITLES[request.kind] ?? "Needs your input",
-    detail: waitingItem ? toolDetail(waitingItem) : undefined,
+    title,
+    detail: waitingItem ? toolDetail(waitingItem) : prompt ? firstLine(prompt) : undefined,
     isApproval,
+    answerable: isApproval && capability === "live",
+    dismissible: false,
   };
+}
+
+/** "Header: answer" lines for a resolved question, using option labels. */
+export function answerLines(questions: T3Question[], answers: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  for (const question of questions) {
+    const raw = answers[question.id];
+    const values = (Array.isArray(raw) ? raw : [raw]).filter((v): v is string => typeof v === "string" && v.trim() !== "");
+    if (!values.length) continue;
+    const labels = values.map((v) => question.options.find((o) => (o.value ?? o.label) === v)?.label ?? v);
+    lines.push(`${question.header}: ${labels.join(", ")}`);
+  }
+  return lines;
 }

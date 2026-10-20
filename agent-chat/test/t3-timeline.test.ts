@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { T3Timeline, type T3Projection } from "../adapters/t3-timeline";
+import { T3Timeline, answerLines, type T3Projection, type T3Question } from "../adapters/t3-timeline";
 
 function projection(overrides: Partial<T3Projection> = {}): T3Projection {
   return {
@@ -70,9 +70,55 @@ describe("T3Timeline", () => {
       turnItems: [{ id: "t1", runId: "r1", ordinal: 1, status: "waiting", type: "command_execution", input: "fly deploy --strategy canary" }],
       runtimeRequests: [{ id: "q1", kind: "command", status: "pending" }],
     }));
-    expect(step.request).toEqual({ id: "q1", kind: "command", title: "Wants to run a command", detail: "fly deploy --strategy canary", isApproval: true });
-    const question = new T3Timeline().step(projection({ runtimeRequests: [{ id: "q2", kind: "user_input", status: "pending" }] }));
-    expect(question.request?.isApproval).toBe(false);
+    expect(step.request).toEqual({
+      id: "q1", kind: "command", title: "Wants to run a command", detail: "fly deploy --strategy canary",
+      isApproval: true, answerable: true, dismissible: false,
+    });
+    const stale = new T3Timeline().step(projection({
+      runtimeRequests: [{ id: "q1", kind: "command", status: "pending", responseCapability: { type: "not_resumable" } }],
+    }));
+    expect(stale.request?.answerable).toBe(false);
+  });
+
+  const deployQuestion: T3Question = {
+    id: "target",
+    header: "Target",
+    question: "Where should this deploy?",
+    options: [{ label: "Staging", description: "Safe" }, { label: "Production", description: "Live", value: "prod" }],
+  };
+
+  test("a pending question carries its questions and options", () => {
+    const step = new T3Timeline().step(projection({
+      turnItems: [{ id: "u1", runId: "r1", ordinal: 1, status: "waiting", type: "user_input_request", requestId: "q2", questions: [deployQuestion] }],
+      runtimeRequests: [{ id: "q2", kind: "user_input", status: "pending", responseCapability: { type: "live" } }],
+    }));
+    expect(step.request).toEqual({
+      id: "q2", kind: "user_input", title: "Asked you a question", isApproval: false,
+      questions: [{ ...deployQuestion, multiSelect: false }], answerable: true, dismissible: false,
+    });
+  });
+
+  test("an answered question shows its answer once, by option label", () => {
+    const timeline = new T3Timeline();
+    const answered = projection({
+      turnItems: [{ id: "u1", runId: "r1", ordinal: 1, status: "completed", type: "user_input_request", requestId: "q2", questions: [deployQuestion] }],
+      runtimeRequests: [{ id: "q2", kind: "user_input", status: "resolved", answers: { target: "prod" } }],
+    });
+    expect(timeline.step(answered).events).toContainEqual({ kind: "user", text: "Target: Production" });
+    expect(timeline.step(answered).events).toEqual([]);
+    const onItem = new T3Timeline().step(projection({
+      turnItems: [{ id: "u1", runId: "r1", ordinal: 1, status: "completed", type: "user_input_request", requestId: "q2", questions: [deployQuestion], questionAnswer: { answers: { target: "Staging" } } }],
+      runtimeRequests: [{ id: "q2", kind: "user_input", status: "resolved" }],
+    }));
+    expect(onItem.events).toContainEqual({ kind: "user", text: "Target: Staging" });
+    expect(answerLines([{ ...deployQuestion, multiSelect: true }], { target: ["Staging", "prod"] })).toEqual(["Target: Staging, Production"]);
+    expect(answerLines([deployQuestion], { target: "Somewhere else" })).toEqual(["Target: Somewhere else"]);
+  });
+
+  test("reports the thread's model selection", () => {
+    const selection = { instanceId: "claudeAgent", model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] };
+    const step = new T3Timeline().step(projection({ thread: { id: "th", title: "t", modelSelection: selection } }));
+    expect(step.modelSelection).toEqual(selection);
   });
 
   test("a sub-thread's items under the parent's run ids still show", () => {

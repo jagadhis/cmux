@@ -5,8 +5,9 @@ import { StatusRow } from "./components/StatusRow";
 import { ActivityIndicatorBlock, AgentMessageRow, Blocks, ToolBlock, TurnActions, type ToolBlockVariant } from "./components/Transcript";
 import { BarsIcon, PinwheelSpinner, ProviderIcon } from "./components/icons";
 import { HintTooltip } from "./components/Tooltips";
+import { T3ModelControls, T3QuestionCard, useT3Questions } from "./components/T3Controls";
 import { useOverlayScrollbars } from "./hooks/useOverlayScrollbars";
-import type { OptionValue, SessionOption } from "./session";
+import type { OptionValue, SessionOption, T3Answers, T3ModelProvider, T3ModelSelection, T3Request } from "./session";
 import {
   agentMessageBlocks,
   queuedAgentMessages,
@@ -66,6 +67,91 @@ function DemoStatusRow({
         setOpenOptionId={setOpenOptionId}
         running={running}
       />
+    </div>
+  );
+}
+
+const t3Catalog: T3ModelProvider[] = [
+  {
+    instanceId: "claudeAgent", driver: "claudeAgent", name: "Claude",
+    models: ["Claude Opus 5.5", "Claude Sonnet 5.5", "Claude Haiku 5.5"].map((name) => ({
+      slug: name.toLowerCase().replace(/ /g, "-").replace(".", "-"),
+      name,
+      options: [
+        { id: "effort", label: "Reasoning", type: "select" as const, choices: [
+          { id: "low", label: "Low" }, { id: "medium", label: "Medium", isDefault: true }, { id: "high", label: "High" }, { id: "max", label: "Max" },
+        ] },
+        { id: "fastMode", label: "Fast Mode", type: "boolean" as const },
+      ],
+    })),
+  },
+  {
+    instanceId: "codex", driver: "codex", name: "Codex",
+    models: [{ slug: "gpt-6-astra", name: "GPT-6-Astra", options: [
+      { id: "reasoningEffort", label: "Reasoning", type: "select" as const, choices: [{ id: "low", label: "Low", isDefault: true }, { id: "high", label: "High" }] },
+    ] }],
+  },
+];
+
+const t3QuestionRequest: T3Request = {
+  id: "gallery-question",
+  kind: "user_input",
+  title: "Asked you a question",
+  isApproval: false,
+  answerable: true,
+  dismissible: true,
+  questions: [
+    { id: "color", header: "Color", question: "Which color should the badge use?", options: [
+      { label: "Red", description: "Bold, for alerts and urgent states." },
+      { label: "Blue", description: "Calm, for neutral or informational use." },
+      { label: "Green", description: "Positive, for success or active states." },
+    ] },
+    { id: "sizes", header: "Sizes", question: "Which sizes should ship?", multiSelect: true, options: [
+      { label: "Small", description: "Compact, for dense lists." },
+      { label: "Medium", description: "The default for most layouts." },
+      { label: "Large", description: "Prominent, for headers." },
+    ] },
+  ],
+};
+
+/** A T3 thread's composer: the question card above it and the model controls in it. */
+function T3ComposerMock() {
+  const [selection, setSelection] = useState<T3ModelSelection>({ instanceId: "claudeAgent", model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] });
+  const [request, setRequest] = useState<T3Request | null>(t3QuestionRequest);
+  const [answers, setAnswers] = useState<T3Answers | null>(null);
+  const [text, setText] = useState("");
+  const question = useT3Questions(request, (_id, given) => { setAnswers(given); setRequest(null); });
+  return (
+    <div className="gallery-t3-composer">
+      <div id="chat-input-row">
+        {question.active ? <T3QuestionCard flow={question} dismissible onDismiss={() => setRequest(null)} /> : null}
+        <div id="chat-card">
+          <div className="input-wrap chat-text-wrap">
+            <textarea
+              id="chat-input"
+              value={text}
+              placeholder={question.active ? "Or type your own answer…" : "Reply…"}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (question.answerWithText(text)) setText("");
+                }
+              }}
+            />
+          </div>
+          <div className="transcript-composer-row">
+            <T3ModelControls selection={selection} catalog={t3Catalog} running={false} onLoad={() => {}} onChange={setSelection} />
+            <span className="transcript-hint"><span className="transcript-dot" aria-hidden="true" /><span>Synced with T3</span></span>
+            <div className="chat-actions"><button className="send" type="button" aria-label="Send"><span aria-hidden>↑</span></button></div>
+          </div>
+        </div>
+      </div>
+      <div className="gallery-label" data-testid="t3-result">
+        {answers ? `Answered: ${JSON.stringify(answers)}` : request ? "Waiting for an answer" : "Skipped"}
+        {" · "}Model: {selection.instanceId}/{selection.model} {JSON.stringify(selection.options ?? [])}
+      </div>
+      <button type="button" onClick={() => { setRequest({ ...t3QuestionRequest, id: `q-${Date.now()}` }); setAnswers(null); }}>Ask again</button>
     </div>
   );
 }
@@ -205,6 +291,7 @@ export function GalleryApp() {
   useOverlayScrollbars();
   const [viewport, setViewport] = useState("1120px");
   const toc = useMemo(() => [
+    ["t3-thread", "T3 thread"],
     ["status-row", "Status row"],
     ["composer", "Composer"],
     ["picker", "Unified picker"],
@@ -239,6 +326,10 @@ export function GalleryApp() {
         </header>
 
         <div className="gallery-viewport-frame" style={{ maxWidth: viewport }}>
+        <Section id="t3-thread" title="T3 thread: model and questions">
+          <T3ComposerMock />
+        </Section>
+
         <Section id="status-row" title="Status row">
           <div className="gallery-stack">
             {galleryProviders.map((provider) => (

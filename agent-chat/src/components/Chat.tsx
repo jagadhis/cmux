@@ -5,6 +5,7 @@ import { agentChatText } from "../i18n";
 import { readStoredProviderOptions, persistOptionsSnapshot, updateStoredProviderOption } from "../options-store";
 import { composerDraftKey, routedToTranscript, transcriptComposerLocked, type OptionValue, type SessionOption } from "../session";
 import { ArrowUp } from "./icons";
+import { T3ModelControls, T3QuestionCard, useT3Questions } from "./T3Controls";
 import { isCtrlJ, insertNewlineAtCaret, useCommandMenu } from "./CommandMenu";
 import { optionAcceptsValue, optionsForSelectedModel } from "./options";
 import { StatusRow } from "./StatusRow";
@@ -15,8 +16,10 @@ import { loadingProviderOptionIds, providerOptionMap, useFileCatalog, useProvide
 
 // cmux Agent Home: copy for chats of T3 Code threads (English only in this fork).
 const T3_TEXT = {
-  running: "Working in T3 · Esc to stop",
-  idle: "Synced with your T3 thread",
+  running: "Working · Esc to stop",
+  idle: "Synced with T3",
+  ownAnswer: "Or type your own answer…",
+  pickAbove: "Pick an option above",
   allow: "Allow",
   allowSession: "Allow for session",
   deny: "Deny",
@@ -65,7 +68,7 @@ function useStickToBottom(scrollRef: RefObject<HTMLDivElement | null>, stickRef:
 }
 
 export function Chat() {
-  const { ready, connectionEpoch, providers, capabilities, providerOptions, session, routing, blocks, options, actions, commands, filesByCwd, fileDiffs, fileDiffErrors, ctrlJ, forkPending, handoffPending, reply, stop, focusTerminal, respondRequest, setOption, fork, handoff, compose, requestProviderOptions, requestProviderCommands, requestFiles, requestFileDiff } = useCtx();
+  const { ready, connectionEpoch, providers, capabilities, providerOptions, session, routing, blocks, options, actions, commands, filesByCwd, fileDiffs, fileDiffErrors, ctrlJ, forkPending, handoffPending, reply, stop, focusTerminal, respondRequest, answerRequest, dismissRequest, t3Models, requestT3Models, setT3Model, setOption, fork, handoff, compose, requestProviderOptions, requestProviderCommands, requestFiles, requestFileDiff } = useCtx();
   const [text, setText] = useState(() => draftStorage.getItem(composerDraftKey) || "");
   const [openOptionId, setOpenOptionId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -87,6 +90,8 @@ export function Chat() {
   const composerLocked = transcriptComposerLocked(session);
   const catalogCwd = transcriptView ? "" : cwd;
   const resolvedOptions = useMemo(() => optionsForSelectedModel(options), [options]);
+  const isT3 = session?.source === "t3";
+  const question = useT3Questions(isT3 ? session?.request : null, answerRequest);
 
   useRestoreModelScopedOptions({ provider: session?.provider, options: resolvedOptions, setOption, pendingModelRestoreRef });
   usePersistSessionOptions(session?.provider, resolvedOptions, pendingModelRestoreRef.current !== null);
@@ -125,6 +130,11 @@ export function Chat() {
     }
     const t = text.trim();
     if (!t) return;
+    // While T3 asks a question, what's typed answers it.
+    if (question.active) {
+      if (question.answerWithText(t)) setText("");
+      return;
+    }
     stickRef.current = true;
     if (reply(t)) setText("");
   };
@@ -188,7 +198,10 @@ export function Chat() {
             {session.queuedMessages.map((message) => <AgentMessageRow key={message.id} message={message} />)}
           </div>
         ) : null}
-        {session?.source === "t3" && session.request?.isApproval ? (
+        {isT3 && question.active ? (
+          <T3QuestionCard flow={question} dismissible={Boolean(session?.request?.dismissible)} onDismiss={() => dismissRequest(session!.request!.id)} />
+        ) : null}
+        {isT3 && session?.request?.isApproval && session.request.answerable !== false ? (
           <div className="t3-request" role="alertdialog" aria-label={session.request.title}>
             <div className="t3-request-title">{session.request.title}</div>
             {session.request.detail ? <div className="t3-request-detail">{session.request.detail}</div> : null}
@@ -213,7 +226,11 @@ export function Chat() {
               ref={taRef}
               id="chat-input"
               data-primary-textarea="true"
-              placeholder={composerLocked ? "Answer in terminal…" : "Reply…"}
+              placeholder={composerLocked
+                ? "Answer in terminal…"
+                : question.active
+                  ? (question.takesText ? T3_TEXT.ownAnswer : T3_TEXT.pickAbove)
+                  : "Reply…"}
               value={text}
               disabled={composerLocked}
               aria-describedby={composerLocked ? "terminal-attention" : undefined}
@@ -233,9 +250,18 @@ export function Chat() {
             // Terminal chat views drive the agent in the terminal: no model or
             // option controls, just where the message goes and send/stop.
             <div className="transcript-composer-row">
+              {isT3 ? (
+                <T3ModelControls
+                  selection={session?.t3Model}
+                  catalog={t3Models}
+                  running={running}
+                  onLoad={requestT3Models}
+                  onChange={setT3Model}
+                />
+              ) : null}
               <span className="transcript-hint">
                 <span className={running ? "transcript-dot running" : "transcript-dot"} aria-hidden="true" />
-                <span>{session?.source === "t3"
+                <span>{isT3
                   ? (running ? T3_TEXT.running : T3_TEXT.idle)
                   : agentChatText(running ? "transcriptViewRunning" : "transcriptViewIdle")}</span>
               </span>

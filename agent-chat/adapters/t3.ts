@@ -7,12 +7,13 @@
 // Keychain item `cmux-agent-home-t3-token`, issued once with
 // `t3 auth session issue --scope orchestration:read --scope orchestration:operate`.
 //
-// Sends, stops and approvals are T3 commands, so they show up in T3 too.
+// Sends, stops, approvals, answers and model changes are T3 commands, so they
+// show up in T3 too, and changes made in T3 show up here.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Adapter, SessionCtx } from "../types";
-import { T3Timeline, type T3PendingRequest, type T3Projection } from "./t3-timeline";
+import { T3Timeline, type T3ModelSelection, type T3PendingRequest, type T3Projection } from "./t3-timeline";
 
 const T3CODE_DIR = process.env.CMUX_T3CODE_DIR || join(homedir(), "projects", "t3code");
 const RUNTIME_FILE = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "server-runtime.json");
@@ -24,6 +25,7 @@ export interface T3SessionHooks {
   onTitle(title: string): void;
   onCwd(cwd: string): void;
   onRequest(request: T3PendingRequest | null): void;
+  onModel(selection: T3ModelSelection | null): void;
   onError(message: string): void;
 }
 
@@ -32,6 +34,7 @@ interface T3State {
   timeline: T3Timeline;
   activeRunId?: string;
   request: T3PendingRequest | null;
+  modelSelection: T3ModelSelection | null;
   hooks: T3SessionHooks;
   subscription?: { interrupt(): void };
   refreshTimer?: ReturnType<typeof setTimeout>;
@@ -150,7 +153,7 @@ function state(sess: SessionCtx): T3State | undefined {
 
 /** Starts mirroring a T3 thread into a chat session. */
 export function attachT3Thread(sess: SessionCtx, threadId: string, hooks: T3SessionHooks) {
-  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, hooks };
+  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, modelSelection: null, hooks };
   sess.internal.t3 = s;
   void subscribe(sess, s);
 }
@@ -200,6 +203,11 @@ async function refresh(sess: SessionCtx, s: T3State) {
     sess.setStatus(step.status);
     s.hooks.onTitle(step.title);
     if (step.cwd) s.hooks.onCwd(step.cwd);
+    const modelSelection = step.modelSelection ?? null;
+    if (JSON.stringify(modelSelection) !== JSON.stringify(s.modelSelection)) {
+      s.modelSelection = modelSelection;
+      s.hooks.onModel(modelSelection);
+    }
     if (JSON.stringify(step.request) !== JSON.stringify(s.request)) {
       s.request = step.request;
       s.hooks.onRequest(step.request);
@@ -265,9 +273,88 @@ export async function launchT3Thread(input: { projectId: string; text: string; r
 
 /** Answers the thread's pending approval in T3. */
 export async function respondT3Request(sess: SessionCtx, requestId: string, decision: "accept" | "acceptForSession" | "decline") {
+  await dispatch({ type: "runtime-request.respond", threadId: threadIdOf(sess), requestId, decision });
+}
+
+/** Answers the thread's pending questions in T3: question id to an option value, values, or typed text. */
+export async function answerT3Question(sess: SessionCtx, requestId: string, answers: Record<string, string | string[]>) {
+  await dispatch({ type: "runtime-request.respond", threadId: threadIdOf(sess), requestId, answers });
+}
+
+/** Skips the thread's pending questions without answering. */
+export async function dismissT3Question(sess: SessionCtx, requestId: string) {
+  await dispatch({ type: "thread.user-input.dismiss", threadId: threadIdOf(sess), requestId });
+}
+
+/** Changes the thread's model in T3; T3 applies it from the next message. */
+export async function setT3Model(sess: SessionCtx, selection: { instanceId: string; model: string; options?: { id: string; value: string | boolean }[] }) {
+  await dispatch({ type: "thread.model-selection.set", threadId: threadIdOf(sess), modelSelection: selection });
+}
+
+export function t3ModelSelection(sess: SessionCtx): T3ModelSelection | null {
+  return state(sess)?.modelSelection ?? null;
+}
+
+function threadIdOf(sess: SessionCtx): string {
   const s = state(sess);
   if (!s) throw new Error("not a T3 thread");
-  await dispatch({ type: "runtime-request.respond", threadId: s.threadId, requestId, decision });
+  return s.threadId;
+}
+
+// MARK: - Models
+
+/** A model option T3 offers, e.g. reasoning effort or fast mode. */
+export interface T3ModelOption {
+  id: string;
+  label: string;
+  type: "select" | "boolean";
+  choices?: { id: string; label: string; description?: string; isDefault?: boolean }[];
+}
+
+export interface T3ModelProvider {
+  instanceId: string;
+  driver: string;
+  name: string;
+  models: { slug: string; name: string; isDefault?: boolean; options: T3ModelOption[] }[];
+}
+
+const CATALOG_TTL_MS = 60_000;
+let catalogCache: { at: number; providers: Promise<T3ModelProvider[]> } | undefined;
+
+/** The providers and models T3 can run right now, as T3's own model picker lists them. */
+export function t3ModelCatalog(): Promise<T3ModelProvider[]> {
+  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) return catalogCache.providers;
+  const providers = run<{ providers: any[] }>((client) => client["server.getConfig"]({})).then((config) =>
+    (config.providers ?? [])
+      .filter((p) => p.enabled !== false && p.installed !== false && p.status === "ready" && p.models?.length)
+      .map((p): T3ModelProvider => ({
+        instanceId: String(p.instanceId),
+        driver: String(p.driver ?? p.instanceId),
+        name: String(p.displayName ?? p.instanceId),
+        models: p.models.map((m: any) => ({
+          slug: String(m.slug),
+          name: String(m.name ?? m.slug),
+          ...(m.isDefault ? { isDefault: true } : {}),
+          options: (m.capabilities?.optionDescriptors ?? [])
+            .filter((d: any) => d.type === "select" || d.type === "boolean")
+            .map((d: any): T3ModelOption => ({
+              id: String(d.id),
+              label: String(d.label ?? d.id),
+              type: d.type,
+              ...(d.type === "select" ? {
+                choices: (d.options ?? []).map((o: any) => ({
+                  id: String(o.id),
+                  label: String(o.label ?? o.id),
+                  ...(o.description ? { description: String(o.description) } : {}),
+                  ...(o.isDefault ? { isDefault: true } : {}),
+                })),
+              } : {}),
+            })),
+        })),
+      })));
+  catalogCache = { at: Date.now(), providers };
+  providers.catch(() => { if (catalogCache?.providers === providers) catalogCache = undefined; });
+  return providers;
 }
 
 export const t3Adapter: Adapter = {
@@ -304,3 +391,5 @@ export const t3Adapter: Adapter = {
   },
   capabilities: { options: [], triggers: [] },
 };
+
+

@@ -168,8 +168,10 @@ export interface SessionSummary {
   mode?: "transcript";
   /** "t3": the agent runs in T3 Code; sends, stops and approvals are T3 commands. */
   source?: "t3";
-  /** A T3 request waiting on the user, shown as an approval card. */
+  /** A T3 request waiting on the user: an approval card or a question card. */
   request?: T3Request | null;
+  /** The T3 thread's model; changing it here changes it in T3. */
+  t3Model?: T3ModelSelection | null;
   /** What that agent is waiting on in the terminal (permission, question). */
   attention?: string | null;
   /** cmux agent messages waiting for that agent. */
@@ -178,8 +180,42 @@ export interface SessionSummary {
 
 export interface QueuedAgentMessage { id: string; from: string; body: string }
 
-export interface T3Request { id: string; kind: string; title: string; detail?: string; isApproval: boolean }
+export interface T3QuestionOption { label: string; description?: string; value?: string }
+export interface T3Question {
+  id: string;
+  header: string;
+  question: string;
+  options: T3QuestionOption[];
+  multiSelect?: boolean;
+  allowCustomAnswer?: boolean;
+  initialAnswer?: string;
+}
+export interface T3Request {
+  id: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  isApproval: boolean;
+  questions?: T3Question[];
+  answerable?: boolean;
+  dismissible?: boolean;
+}
 export type T3Decision = "accept" | "acceptForSession" | "decline";
+export type T3Answers = Record<string, string | string[]>;
+
+export interface T3ModelSelection { instanceId?: string; model?: string; options?: { id: string; value: string | boolean }[] }
+export interface T3ModelOption {
+  id: string;
+  label: string;
+  type: "select" | "boolean";
+  choices?: { id: string; label: string; description?: string; isDefault?: boolean }[];
+}
+export interface T3ModelProvider {
+  instanceId: string;
+  driver: string;
+  name: string;
+  models: { slug: string; name: string; isDefault?: boolean; options: T3ModelOption[] }[];
+}
 
 /** Whether a terminal-backed chat must be answered in the terminal itself. */
 export function transcriptComposerLocked(
@@ -292,6 +328,12 @@ export interface SessionState {
   /** Focuses the terminal pane behind a terminal chat view. */
   focusTerminal(): void;
   respondRequest(requestId: string, decision: T3Decision): void;
+  answerRequest(requestId: string, answers: T3Answers): void;
+  dismissRequest(requestId: string): void;
+  /** T3's providers and models, loaded on first use. */
+  t3Models: T3ModelProvider[] | null;
+  requestT3Models(): void;
+  setT3Model(selection: T3ModelSelection & { instanceId: string; model: string }): void;
   setOption(id: string, value: OptionValue): void;
   fork(): void;
   handoff(): void;
@@ -409,6 +451,7 @@ export function useSession(): SessionState {
   const [lastError, setLastError] = useState("");
   const [forkPending, setForkPending] = useState(false);
   const [handoffPending, setHandoffPending] = useState(false);
+  const [t3Models, setT3Models] = useState<T3ModelProvider[] | null>(null);
   // Reserve the tab during the click's user-activation window. The provider
   // fork itself is asynchronous, so opening it when the response arrives can
   // be rejected as a popup by the browser.
@@ -682,6 +725,14 @@ export function useSession(): SessionState {
               setSession((s) => (s ? { ...s, request: msg.request && typeof msg.request === "object" ? msg.request : null } : s));
             }
             break;
+          case "session-t3-model":
+            if (msg.sessionId === sessionIdRef.current) {
+              setSession((s) => (s ? { ...s, t3Model: msg.model && typeof msg.model === "object" ? msg.model : null } : s));
+            }
+            break;
+          case "t3-models":
+            setT3Models(Array.isArray(msg.providers) ? msg.providers : []);
+            break;
           case "session-attention":
             if (msg.sessionId === sessionIdRef.current) {
               setSession((s) => (s ? { ...s, attention: typeof msg.attention === "string" ? msg.attention : null } : s));
@@ -916,6 +967,22 @@ export function useSession(): SessionState {
     // Hide the card right away; the next T3 update confirms it.
     setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
   }, []);
+  const answerRequest = useCallback((requestId: string, answers: T3Answers) => {
+    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, answers });
+    setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
+  }, []);
+  const dismissRequest = useCallback((requestId: string) => {
+    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, dismiss: true });
+    setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
+  }, []);
+  const requestT3Models = useCallback(() => {
+    sendRaw({ op: "t3-models" });
+  }, []);
+  const setT3Model = useCallback((selection: T3ModelSelection & { instanceId: string; model: string }) => {
+    if (sessionIdRef.current) sendRaw({ op: "t3-set-model", sessionId: sessionIdRef.current, model: selection });
+    // Show it now; T3's update confirms it, or the server puts it back.
+    setSession((s) => (s ? { ...s, t3Model: selection } : s));
+  }, []);
   const focusTerminal = useCallback(() => {
     if (sessionIdRef.current) sendRaw({ op: "focus-terminal", sessionId: sessionIdRef.current });
   }, [sendRaw]);
@@ -1043,6 +1110,11 @@ export function useSession(): SessionState {
     stop,
     focusTerminal,
     respondRequest,
+    answerRequest,
+    dismissRequest,
+    t3Models,
+    requestT3Models,
+    setT3Model,
     setOption,
     fork,
     handoff,

@@ -18,8 +18,8 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
-import { attachT3Thread, launchT3Thread, respondT3Request, t3Adapter } from "./adapters/t3";
-import type { T3PendingRequest } from "./adapters/t3-timeline";
+import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, t3Adapter, t3ModelCatalog, t3ModelSelection } from "./adapters/t3";
+import type { T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
 import { discoverHarnesses } from "./harnesses";
@@ -277,7 +277,11 @@ function sessionSummary(s: Session) {
     startRequestId: s.startRequestId,
     capabilities: s.transcript ? s.adapter.capabilities : capabilitiesFor(s.provider),
     ...(s.transcript ? { mode: "transcript" as const, attention: s.transcript.attention ?? null, queuedMessages: s.transcript.queuedMessages ?? [] } : {}),
-    ...(s.internal.t3 ? { source: "t3" as const, request: (s.internal.t3Request as T3PendingRequest | null) ?? null } : {}),
+    ...(s.internal.t3 ? {
+      source: "t3" as const,
+      request: (s.internal.t3Request as T3PendingRequest | null) ?? null,
+      t3Model: t3ModelSelection(s),
+    } : {}),
   };
 }
 
@@ -838,13 +842,17 @@ function ensureT3Session(threadId: string): Session {
     },
     onRequest(request: T3PendingRequest | null) {
       sess.internal.t3Request = request;
-      // Questions are answered in T3; approvals get buttons right in the chat.
-      const attention = request && !request.isApproval ? `${request.title}. Answer it in T3.` : null;
+      // Approvals and questions are answered right in the chat; anything else waits in T3.
+      const attention = request && !request.answerable ? `${request.title}. Answer it in T3.` : null;
       if (sess.transcript) sess.transcript.attention = attention;
       for (const ws of sess.sockets) {
         ws.send(JSON.stringify({ kind: "session-attention", sessionId: sess.id, attention }));
         ws.send(JSON.stringify({ kind: "session-request", sessionId: sess.id, request }));
       }
+    },
+    onModel(selection: T3ModelSelection | null) {
+      const payload = JSON.stringify({ kind: "session-t3-model", sessionId: sess.id, model: selection });
+      for (const ws of sess.sockets) ws.send(payload);
     },
     onError(message) {
       if (message === lastError) return;
@@ -853,6 +861,30 @@ function ensureT3Session(threadId: string): Session {
     },
   });
   return sess;
+}
+
+/** Question answers from the client: question id to a string or strings. */
+function t3Answers(raw: unknown): Record<string, string | string[]> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const answers: Record<string, string | string[]> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string") answers[id] = value;
+    else if (Array.isArray(value) && value.every((v) => typeof v === "string")) answers[id] = value as string[];
+    else return undefined;
+  }
+  return Object.keys(answers).length ? answers : undefined;
+}
+
+function t3ModelSelectionInput(raw: unknown): { instanceId: string; model: string; options?: { id: string; value: string | boolean }[] } | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const { instanceId, model, options } = raw as Record<string, unknown>;
+  if (typeof instanceId !== "string" || !instanceId || typeof model !== "string" || !model) return undefined;
+  const cleaned = Array.isArray(options)
+    ? options.filter((o): o is { id: string; value: string | boolean } =>
+      Boolean(o) && typeof o.id === "string" && (typeof o.value === "string" || typeof o.value === "boolean"))
+      .map((o) => ({ id: o.id, value: o.value }))
+    : undefined;
+  return { instanceId, model, ...(cleaned?.length ? { options: cleaned } : {}) };
 }
 
 function resolveT3SessionById(id: string): Session | undefined {
@@ -2383,6 +2415,12 @@ function safeReason(err: unknown): string {
   return "unexpected error";
 }
 
+function t3Reason(err: unknown): string {
+  const raw = err && typeof err === "object" && "message" in err ? String((err as { message: unknown }).message) : String(err);
+  const line = raw.split("\n").find((l) => l.trim())?.trim() ?? "";
+  return line ? (line.length > 200 ? `${line.slice(0, 199)}…` : line) : "unexpected error";
+}
+
 function safeErrorMessage(op: string, err: unknown, context: { provider?: string } = {}): string {
   const reason = safeReason(err);
   if (op === "start") return `Failed to start ${context.provider ?? "agent"}: ${reason}`;
@@ -2390,6 +2428,9 @@ function safeErrorMessage(op: string, err: unknown, context: { provider?: string
   if (op === "get-file-diff") return `Failed to load diff: ${reason}`;
   if (op === "send") return `Failed to send message: ${reason}`;
   if (op === "set-option") return `Failed to update option: ${reason}`;
+  // T3's refusals ("start a new chat to switch providers") are for the user; show them.
+  if (op === "t3-set-model") return `Couldn't change the model in T3: ${t3Reason(err)}`;
+  if (op === "respond") return `Couldn't answer in T3: ${t3Reason(err)}`;
   return `Request failed: ${reason}`;
 }
 
@@ -2555,10 +2596,36 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
     }
     case "respond-request": {
       const sess = sessions.get(String(msg.sessionId));
-      const decision = String(msg.decision);
-      if (!sess?.internal.t3 || !["accept", "acceptForSession", "decline"].includes(decision)) return;
-      respondT3Request(sess, String(msg.requestId), decision as "accept" | "acceptForSession" | "decline")
-        .catch((err) => sess.emit({ kind: "error", message: safeErrorMessage("respond", err) }));
+      if (!sess?.internal.t3) return;
+      const requestId = String(msg.requestId);
+      const fail = (err: unknown) => sess.emit({ kind: "error", message: safeErrorMessage("respond", err) });
+      if (msg.dismiss === true) {
+        dismissT3Question(sess, requestId).catch(fail);
+      } else if (msg.answers && typeof msg.answers === "object") {
+        const answers = t3Answers(msg.answers);
+        if (answers) answerT3Question(sess, requestId, answers).catch(fail);
+      } else {
+        const decision = String(msg.decision);
+        if (!["accept", "acceptForSession", "decline"].includes(decision)) return;
+        respondT3Request(sess, requestId, decision as "accept" | "acceptForSession" | "decline").catch(fail);
+      }
+      break;
+    }
+    case "t3-models": {
+      t3ModelCatalog()
+        .then((providers) => ws.send(JSON.stringify({ kind: "t3-models", providers })))
+        .catch((err) => ws.send(JSON.stringify({ kind: "t3-models", providers: [], error: safeErrorMessage("t3-models", err) })));
+      break;
+    }
+    case "t3-set-model": {
+      const sess = sessions.get(String(msg.sessionId));
+      const selection = t3ModelSelectionInput(msg.model);
+      if (!sess?.internal.t3 || !selection) return;
+      setT3Model(sess, selection).catch((err) => {
+        sess.emit({ kind: "error", message: safeErrorMessage("t3-set-model", err) });
+        // Put the picker back on what T3 still has.
+        ws.send(JSON.stringify({ kind: "session-t3-model", sessionId: sess.id, model: t3ModelSelection(sess) }));
+      });
       break;
     }
     case "focus-terminal": {
