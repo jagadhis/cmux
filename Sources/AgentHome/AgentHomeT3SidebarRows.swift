@@ -27,14 +27,15 @@ struct AgentHomeT3TaskRow: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
             } else {
                 if !task.subThreads.isEmpty || !task.handoffs.isEmpty {
+                    // Tinted while sub-threads are working, so a busy task reads as one at a glance.
+                    let live = task.liveSubThreadCount
+                    let tint = live > 0 ? AgentHomePalette.running : Color.primary
                     Text(task.subThreads.count + task.handoffs.count, format: .number)
-                        .font(.system(size: 10.5).monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 10.5, weight: live > 0 ? .semibold : .regular).monospacedDigit())
+                        .foregroundStyle(live > 0 ? AnyShapeStyle(tint) : AnyShapeStyle(.tertiary))
                         .padding(.horizontal, 5)
-                        .background(Capsule().fill(Color.primary.opacity(0.06)))
-                        .help(task.handoffs.isEmpty
-                            ? String(localized: "agentHome.t3.subThreads", defaultValue: "\(task.subThreads.count) sub-threads")
-                            : String(localized: "agentHome.t3.handoffsAndSubThreads", defaultValue: "\(task.handoffs.count) handoffs, \(task.subThreads.count) sub-threads"))
+                        .background(Capsule().fill(tint.opacity(live > 0 ? 0.14 : 0.06)))
+                        .help(subThreadsHelp(live: live))
                 }
                 AgentHomeT3StatusDot(status: status, unseen: unseen, endedEarly: task.latestRunEndedEarly)
             }
@@ -55,6 +56,14 @@ struct AgentHomeT3TaskRow: View {
         .accessibilityAction(named: Text(String(localized: "agentHome.t3.verify", defaultValue: "Mark verified"))) {
             if status == .done { onVerify() }
         }
+    }
+
+    private func subThreadsHelp(live: Int) -> String {
+        let total = task.handoffs.isEmpty
+            ? String(localized: "agentHome.t3.subThreads", defaultValue: "\(task.subThreads.count) sub-threads")
+            : String(localized: "agentHome.t3.handoffsAndSubThreads", defaultValue: "\(task.handoffs.count) handoffs, \(task.subThreads.count) sub-threads")
+        guard live > 0 else { return total }
+        return total + " · " + String(localized: "agentHome.t3.subThreadsWorking", defaultValue: "\(live) working")
     }
 }
 
@@ -89,45 +98,56 @@ struct AgentHomeT3VerifyButton: View {
     }
 }
 
-/// A thread nested under its task: a sub-thread an agent created, or a thread
-/// an agent handed the work off to.
+/// A thread nested under its task: a thread an agent handed the work off to,
+/// or a sub-thread an agent created, indented under the thread that started it.
+/// A working sub-agent shows what it's doing on a second line.
 struct AgentHomeT3SubThreadRow: View {
     let thread: T3Thread
     var isHandoff = false
+    /// 1 for a row under a main thread, 2 for a row under one of its sub-threads, and so on.
+    var depth = 1
+    /// The thread that started this one, for a sub-thread.
+    var parentTitle: String?
     let isSelected: Bool
     let onOpen: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
+        let status = T3ThreadStatus.of(thread)
+        let activity = status == .running ? thread.subagent?.progress : nil
         Button(action: onOpen) {
-            HStack(spacing: 6) {
-                if isHandoff {
-                    Image(systemName: "arrowshape.turn.up.right")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .help(String(localized: "agentHome.t3.handoff", defaultValue: "Handed off from this task"))
-                } else {
-                    Text(verbatim: "↳")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    glyph.frame(width: 11)
+                    Text(thread.title)
+                        .font(.system(size: 12.5))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                    Spacer(minLength: 4)
+                    AgentHomeT3StatusDot(
+                        status: status,
+                        showsDone: true,
+                        unseen: thread.hasUnseenResult,
+                        endedEarly: thread.latestRunEndedEarly
+                    )
                 }
-                Text(thread.title)
-                    .font(.system(size: 12.5))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                Spacer(minLength: 4)
-                AgentHomeT3StatusDot(
-                    status: T3ThreadStatus.of(thread),
-                    showsDone: true,
-                    unseen: thread.hasUnseenResult,
-                    endedEarly: thread.latestRunEndedEarly
-                )
+                if let activity {
+                    Text(activity)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.leading, 17)
+                        .padding(.trailing, 20)
+                        .transition(.opacity)
+                }
             }
-            .padding(.leading, 34)
+            .padding(.leading, 34 + CGFloat(max(depth - 1, 0)) * 14)
             .padding(.horizontal, 9)
-            .frame(height: 25)
+            .padding(.vertical, activity == nil ? 0 : 4)
+            .frame(minHeight: 25)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
@@ -137,7 +157,64 @@ struct AgentHomeT3SubThreadRow: View {
         .buttonStyle(.plain)
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
         .transition(.opacity.combined(with: .move(edge: .top)))
-        .accessibilityLabel(Text(thread.title))
+        .help(relation.map { "\($0) · \(thread.agentKind.displayName)" } ?? thread.title)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text([thread.title, relation, activity].compactMap { $0 }.joined(separator: ", ")))
+        .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        if isHandoff {
+            Image(systemName: "arrowshape.turn.up.right")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        } else {
+            Text(verbatim: "↳")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// How this thread relates to the one it's under: "Sub-agent of …".
+    private var relation: String? {
+        if isHandoff { return String(localized: "agentHome.t3.handoff", defaultValue: "Handed off from this task") }
+        guard let parentTitle else { return nil }
+        switch thread.relationshipToParent {
+        case "subagent":
+            return String(localized: "agentHome.t3.subAgentOf", defaultValue: "Sub-agent of \(parentTitle)")
+        case "fork":
+            return String(localized: "agentHome.t3.forkOf", defaultValue: "Forked from \(parentTitle)")
+        default:
+            return String(localized: "agentHome.t3.subThreadOf", defaultValue: "Sub-thread of \(parentTitle)")
+        }
+    }
+}
+
+/// "N more sub-threads" under an open task, toggling its finished sub-threads.
+struct AgentHomeT3MoreSubThreadsRow: View {
+    let hiddenCount: Int
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 6) {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .frame(width: 11)
+                Text(isExpanded
+                    ? String(localized: "agentHome.t3.fewerSubThreads", defaultValue: "Show fewer sub-threads")
+                    : String(localized: "agentHome.t3.moreSubThreads", defaultValue: "\(hiddenCount) more sub-threads"))
+                Spacer()
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+            .padding(.leading, 43)
+            .frame(height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

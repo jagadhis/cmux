@@ -193,21 +193,29 @@ struct AgentHomeSidebarView: View {
                 onOpen: { t3Model.open(task, tabManager: tabManager) },
                 onVerify: { t3Model.verify(task, tabManager: tabManager) }
             )
-            // Handoffs carry the task on, so unverified ones stay in view; sub-threads only while live.
-            let handoffs = isSelectedTask
-                ? task.handoffs
-                : task.handoffs.filter { T3ThreadStatus.of($0) < .idle }
-            ForEach(handoffs, id: \.id) { handoff in
-                AgentHomeT3SubThreadRow(thread: handoff, isHandoff: true, isSelected: shown == handoff.id) {
-                    t3Model.open(task, thread: handoff, tabManager: tabManager)
+            // Every sub-thread lists under the thread that started it. Handoffs carry the
+            // task on, so unverified ones stay in view; sub-threads only while live, with
+            // the parents that link them, unless the task is open.
+            let subThreadsKey = "subThreads:\(task.id)"
+            let showsAllSubThreads = expandedT3Lists.contains(subThreadsKey)
+            let outline = task.subThreadOutline(
+                finishedLimit: isSelectedTask ? (showsAllSubThreads ? .max : Self.collapsedSubThreadCount) : 0
+            )
+            subThreadRows(outline.rows(under: task.thread.id), task: task, shown: shown)
+            ForEach(task.handoffs, id: \.id) { handoff in
+                let rows = outline.rows(under: handoff.id)
+                if isSelectedTask || T3ThreadStatus.of(handoff) < .idle || !rows.isEmpty {
+                    AgentHomeT3SubThreadRow(thread: handoff, isHandoff: true, isSelected: shown == handoff.id) {
+                        t3Model.open(task, thread: handoff, tabManager: tabManager)
+                    }
+                    subThreadRows(rows, task: task, shown: shown, handoffDepth: 1)
                 }
             }
-            let subThreads = isSelectedTask
-                ? Array(task.subThreads.prefix(Self.collapsedSubThreadCount))
-                : task.subThreads.filter { T3ThreadStatus.of($0) < .done }
-            ForEach(subThreads, id: \.id) { subThread in
-                AgentHomeT3SubThreadRow(thread: subThread, isSelected: shown == subThread.id) {
-                    t3Model.open(task, thread: subThread, tabManager: tabManager)
+            if isSelectedTask, outline.hiddenCount > 0 || showsAllSubThreads {
+                AgentHomeT3MoreSubThreadsRow(hiddenCount: outline.hiddenCount, isExpanded: showsAllSubThreads) {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        if showsAllSubThreads { expandedT3Lists.remove(subThreadsKey) } else { expandedT3Lists.insert(subThreadsKey) }
+                    }
                 }
             }
         }
@@ -216,6 +224,20 @@ struct AgentHomeSidebarView: View {
                 withAnimation(.easeOut(duration: 0.18)) {
                     if isExpanded { expandedT3Lists.remove(listKey) } else { expandedT3Lists.insert(listKey) }
                 }
+            }
+        }
+    }
+
+    /// Sub-threads under a main thread, indented by how far below it they are.
+    private func subThreadRows(_ rows: [T3SubThreadRow], task: T3TaskNode, shown: String?, handoffDepth: Int = 0) -> some View {
+        ForEach(rows) { row in
+            AgentHomeT3SubThreadRow(
+                thread: row.thread,
+                depth: row.depth + handoffDepth,
+                parentTitle: row.parent?.title,
+                isSelected: shown == row.id
+            ) {
+                t3Model.open(task, thread: row.thread, tabManager: tabManager)
             }
         }
     }

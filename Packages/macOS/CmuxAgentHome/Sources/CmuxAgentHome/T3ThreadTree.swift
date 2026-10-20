@@ -8,7 +8,7 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
     case running
     /// The agent finished and the user hasn't verified the result (settled the thread) yet.
     case done
-    /// Nothing to do: settled, or a sub-thread with no runs of its own.
+    /// Nothing to do: settled, or a sub-thread with no runs of its own whose sub-agent isn't working.
     case idle
 
     public static func < (lhs: T3ThreadStatus, rhs: T3ThreadStatus) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -18,12 +18,16 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
 
     /// The status of one thread. A pending request only counts while a run is
     /// active, so a stale request on a finished thread doesn't raise "needs you".
-    /// A finished thread is done until the user settles it.
+    /// A finished thread is done until the user settles it. A provider's own
+    /// sub-agent runs inside its parent's run, so with no runs of its own it
+    /// counts as running while its sub-agent record says so.
     ///
     /// - Parameter thread: The thread.
     /// - Returns: Its status.
     public static func of(_ thread: T3Thread) -> T3ThreadStatus {
-        guard let run = thread.latestRunStatus else { return .idle }
+        guard let run = thread.latestRunStatus else {
+            return thread.subagent?.isRunning == true ? .running : .idle
+        }
         if activeRunStatuses.contains(run) {
             return thread.hasPendingRequest || run == "waiting" ? .needsYou : .running
         }

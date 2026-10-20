@@ -36,9 +36,9 @@ public struct T3CodeStateReader: Sendable {
     ///
     /// A thread counts as settled when its task's root thread is: settling a
     /// task in T3 settles the sub-threads its agents created with it. Threads
-    /// with a live run or a pending request are always read, and so is every
-    /// thread of a task in `openTaskIds`, so a task open in cmux stays readable
-    /// after it's settled.
+    /// with a live run, a working sub-agent or a pending request are always
+    /// read, and so is every thread of a task in `openTaskIds`, so a task open
+    /// in cmux stays readable after it's settled.
     ///
     /// - Parameters:
     ///   - openTaskIds: Root thread ids of tasks open in cmux.
@@ -54,30 +54,43 @@ public struct T3CodeStateReader: Sendable {
         let openList = openIds.isEmpty ? "NULL" : Array(repeating: "?", count: openIds.count).joined(separator: ", ")
         let includedIds = includingThreadIds.sorted()
         let includedList = includedIds.isEmpty ? "NULL" : Array(repeating: "?", count: includedIds.count).joined(separator: ", ")
+        // Older T3 versions have no sub-agent table; read their threads without it.
+        let subagents = try hasTable(db, "orchestration_v2_projection_subagents")
+            ? """
+                SELECT child_thread_id, origin, status, json_extract(payload_json, '$.progress') AS progress, started_at, completed_at
+                FROM (SELECT *, row_number() OVER (PARTITION BY child_thread_id ORDER BY updated_at DESC, rowid DESC) AS n
+                      FROM orchestration_v2_projection_subagents WHERE child_thread_id IS NOT NULL)
+                WHERE n = 1
+                """
+            : "SELECT NULL AS child_thread_id, NULL AS origin, NULL AS status, NULL AS progress, NULL AS started_at, NULL AS completed_at WHERE 0"
         let sql = """
             WITH latest_run AS (
                 SELECT r.thread_id, r.status, r.completed_at
                 FROM orchestration_v2_projection_runs r
                 WHERE r.ordinal = (SELECT max(ordinal) FROM orchestration_v2_projection_runs WHERE thread_id = r.thread_id)
-            )
+            ),
+            subagent AS (\(subagents))
             SELECT t.thread_id, t.project_id, p.title, t.title, t.default_provider,
                    t.created_at, t.updated_at, t.payload_json, p.workspace_root,
                    lr.status,
                    (SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
                      WHERE q.thread_id = t.thread_id AND q.status = 'pending'),
                    lr.completed_at,
-                   json_extract(coalesce(root.payload_json, t.payload_json), '$.settledOverride') = 'settled'
+                   json_extract(coalesce(root.payload_json, t.payload_json), '$.settledOverride') = 'settled',
+                   sa.origin, sa.status, sa.progress, sa.started_at, sa.completed_at
             FROM orchestration_v2_projection_threads t
             LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
             LEFT JOIN orchestration_v2_projection_threads root
                    ON root.thread_id = json_extract(t.payload_json, '$.lineage.rootThreadId')
                   AND root.thread_id <> t.thread_id
             LEFT JOIN latest_run lr ON lr.thread_id = t.thread_id
+            LEFT JOIN subagent sa ON sa.child_thread_id = t.thread_id
             WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
               AND (
                 (coalesce(json_extract(coalesce(root.payload_json, t.payload_json), '$.settledOverride'), '') <> 'settled'
                   AND coalesce(julianday(json_extract(coalesce(root.payload_json, t.payload_json), '$.snoozedUntil')), 0) <= julianday('now'))
                 OR lr.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+                OR sa.status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
                 OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests q
                             WHERE q.thread_id = t.thread_id AND q.status = 'pending')
                 OR coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id) IN (\(openList))
@@ -109,7 +122,16 @@ public struct T3CodeStateReader: Sendable {
                 hasPendingRequest: row.int(10) > 0,
                 latestRunCompletedAt: Self.date(row.text(11)),
                 lastVisitedAt: Self.date(payload["lastVisitedAt"] as? String),
-                isSettled: row.int(12) == 1
+                isSettled: row.int(12) == 1,
+                subagent: row.text(14).map { status in
+                    T3Thread.Subagent(
+                        origin: row.text(13) ?? "",
+                        status: status,
+                        progress: row.text(15).flatMap { $0.isEmpty ? nil : $0 },
+                        startedAt: Self.date(row.text(16)),
+                        completedAt: Self.date(row.text(17))
+                    )
+                }
             )
         }
     }
@@ -264,6 +286,10 @@ public struct T3CodeStateReader: Sendable {
     /// T3 rewrites `compacted-at` next to its database when it compacts it.
     var compactionMarkerURL: URL {
         databaseURL.deletingLastPathComponent().appendingPathComponent("compacted-at")
+    }
+
+    private func hasTable(_ db: OpaquePointer, _ name: String) throws -> Bool {
+        try !query(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", bind: [name]) { _ in true }.isEmpty
     }
 
     private func open() throws -> OpaquePointer {

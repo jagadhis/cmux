@@ -43,6 +43,8 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     public var lastVisitedAt: Date?
     /// Whether the user settled the thread in T3 (marked it verified).
     public var isSettled: Bool
+    /// The sub-agent behind the thread, when an agent started it as one.
+    public var subagent: Subagent?
 
     /// Creates a T3 thread.
     ///
@@ -67,6 +69,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     ///   - latestRunCompletedAt: When the latest run finished.
     ///   - lastVisitedAt: When the user last looked at the thread.
     ///   - isSettled: Whether the user settled the thread.
+    ///   - subagent: The sub-agent behind the thread.
     public init(
         id: String,
         projectId: String,
@@ -87,7 +90,8 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         hasPendingRequest: Bool = false,
         latestRunCompletedAt: Date? = nil,
         lastVisitedAt: Date? = nil,
-        isSettled: Bool = false
+        isSettled: Bool = false,
+        subagent: Subagent? = nil
     ) {
         self.id = id
         self.projectId = projectId
@@ -109,6 +113,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         self.latestRunCompletedAt = latestRunCompletedAt
         self.lastVisitedAt = lastVisitedAt
         self.isSettled = isSettled
+        self.subagent = subagent
     }
 
     /// Whether the latest run finished after the user last looked, as T3 counts it.
@@ -118,9 +123,10 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         return completed > visited
     }
 
-    /// Whether the latest run ended without finishing: failed, interrupted or cancelled.
+    /// Whether the latest run ended without finishing: failed, interrupted or
+    /// cancelled. A sub-agent with no runs of its own counts by its own status.
     public var latestRunEndedEarly: Bool {
-        ["failed", "interrupted", "cancelled"].contains(latestRunStatus ?? "")
+        ["failed", "interrupted", "cancelled"].contains(latestRunStatus ?? subagent?.status ?? "")
     }
 
     /// The agent behind the thread, from its provider instance id.

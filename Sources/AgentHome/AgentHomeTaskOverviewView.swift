@@ -56,6 +56,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
                     mode: mode,
                     onModeChange: { viewState.setMode($0, for: task.id) },
                     onOpenRoot: { t3Model.open(t3Task, tabManager: tabManager) },
+                    onOpenThread: { t3Model.open(t3Task, thread: $0, tabManager: tabManager) },
                     onVerify: { t3Model.verify(t3Task, tabManager: tabManager) }
                 )
             } else if let task {
@@ -269,7 +270,8 @@ private struct AgentHomeTaskMetaRow: View {
 
 // MARK: - T3 task header and overview
 
-/// The header for a T3 task: project › task (› sub-thread), Chat / Overview, and the sync badge.
+/// The header for a T3 task: project › task (› the thread a sub-thread is under › sub-thread),
+/// Chat / Overview, and the sync badge.
 private struct AgentHomeT3TaskHeader: View {
     let task: T3TaskNode
     let projectName: String?
@@ -277,6 +279,7 @@ private struct AgentHomeT3TaskHeader: View {
     let mode: AgentHomeTaskViewState.Mode
     let onModeChange: (AgentHomeTaskViewState.Mode) -> Void
     let onOpenRoot: () -> Void
+    let onOpenThread: (T3Thread) -> Void
     let onVerify: () -> Void
 
     var body: some View {
@@ -292,6 +295,15 @@ private struct AgentHomeT3TaskHeader: View {
                 .buttonStyle(.plain)
                 .help(String(localized: "agentHome.t3.backToMain", defaultValue: "Back to the main thread"))
                 Text(verbatim: "›").foregroundStyle(.tertiary)
+                let parent = task.listedParent(of: shownSubThread)
+                if parent.id != task.thread.id {
+                    Button { onOpenThread(parent) } label: {
+                        Text(parent.title).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "agentHome.t3.backToParent", defaultValue: "Open the thread that started this one"))
+                    Text(verbatim: "›").foregroundStyle(.tertiary)
+                }
                 Text(shownSubThread.title).fontWeight(.semibold).lineLimit(1)
             } else {
                 Text(task.thread.title).fontWeight(.semibold).lineLimit(1)
@@ -348,7 +360,13 @@ private struct AgentHomeT3Overview: View {
     enum FilesScope: Hashable { case session, task }
 
     var body: some View {
-        let sessions = task.allThreads
+        // Each main thread, followed by the sub-threads under it, so a sub-agent sits next to the thread that started it.
+        let outline = task.subThreadOutline()
+        let parents = Dictionary(
+            task.mainThreads.flatMap { outline.rows(under: $0.id) }.map { ($0.id, $0.parent?.title ?? "") },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let sessions = task.mainThreads.flatMap { [$0] + outline.rows(under: $0.id).map(\.thread) }
         let live = sessions.filter { T3ThreadStatus.of($0) < .done }.count
         let shown = task.thread(withId: shownThreadId ?? task.thread.id) ?? task.thread
         ScrollView(.vertical) {
@@ -369,6 +387,7 @@ private struct AgentHomeT3Overview: View {
                                 AgentHomeT3SessionCard(
                                     thread: thread,
                                     role: role(of: thread),
+                                    parentTitle: parents[thread.id],
                                     isShown: thread.id == shown.id,
                                     files: filesByThread[thread.id] ?? []
                                 ) { onOpen(thread) }
@@ -456,6 +475,8 @@ private struct AgentHomeT3SessionCard: View {
 
     let thread: T3Thread
     let role: Role
+    /// The thread that started this one, for a sub-thread.
+    var parentTitle: String?
     let isShown: Bool
     /// The files the session wrote.
     var files: [AgentSessionFile] = []
@@ -472,6 +493,9 @@ private struct AgentHomeT3SessionCard: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(thread.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                         Text(subtitle).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                        if status == .running, let progress = thread.subagent?.progress {
+                            Text(progress).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 6)
                     if status == .done {
@@ -532,7 +556,13 @@ private struct AgentHomeT3SessionCard: View {
         var parts: [String] = switch role {
         case .main: [String(localized: "agentHome.t3.mainThread", defaultValue: "Main thread")]
         case .handoff: [String(localized: "agentHome.t3.handoffThread", defaultValue: "Handoff")]
-        case .subThread: [String(localized: "agentHome.t3.subThread", defaultValue: "Sub-thread")]
+        case .subThread:
+            switch (thread.relationshipToParent, parentTitle) {
+            case ("subagent", let parent?): [String(localized: "agentHome.t3.subAgentOf", defaultValue: "Sub-agent of \(parent)")]
+            case ("fork", let parent?): [String(localized: "agentHome.t3.forkOf", defaultValue: "Forked from \(parent)")]
+            case (_, let parent?): [String(localized: "agentHome.t3.subThreadOf", defaultValue: "Sub-thread of \(parent)")]
+            case (_, nil): [String(localized: "agentHome.t3.subThread", defaultValue: "Sub-thread")]
+            }
         }
         parts.append(kind.displayName)
         if let updated = thread.updatedAt { parts.append(AgentHomeFormat.relative(updated)) }
