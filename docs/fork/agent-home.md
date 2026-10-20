@@ -116,6 +116,14 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - Plans: this Claude Code version has no `TodoWrite` or task-list tool, so Claude cards show no plan for now. Agents that report todos still do.
   - Agent cards read the Feed's in-memory items (`FeedCoordinator.shared.store`), not `~/.cmuxterm/workstream.jsonl`, which redacts paths.
 
+- **Phase 6, T3 Code integration: first version running (2026-10-20).**
+  - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
+  - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.
+  - Unopened T3 tasks appear dimmed under their project, tagged "T3" with a thread count, three at a time plus "N more from T3". T3 projects with no cmux project are listed under "From T3 Code". Leftover threads show as one "Unsorted T3 threads" count.
+  - Clicking a T3 task creates the project if it's missing (tagged with the `t3:` external id), opens a workspace in the task's worktree or the project root, files it under the project, selects it, and records the link in UserDefaults (`agentHomeT3TaskLinks`).
+  - On the owner's data, the dev build showed matches under devjags-portfolio and oorva-app, T3-only projects (suttru-tn, oorva-landing, oorva-bookeeping, workspace), and 1,742 unsorted threads.
+  - Not built yet: the sorting flow for unsorted threads, resuming a T3 thread's agent session in the new terminal, and "Open in T3".
+
 ### Building on this machine
 
 - **Commands:** `CMUX_DEV_BACKEND_MODE=local ./scripts/reload.sh --tag agent-home`, with Homebrew's rustup on `PATH` (`/opt/homebrew/opt/rustup/bin`). Zig must be 0.16 (`brew install zig@0.16`).

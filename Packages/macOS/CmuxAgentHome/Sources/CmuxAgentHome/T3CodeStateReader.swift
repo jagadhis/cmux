@@ -42,7 +42,7 @@ public struct T3CodeStateReader: Sendable {
         let pullRequests = try readPullRequests(db)
         let sql = """
             SELECT t.thread_id, t.project_id, p.title, t.title, t.default_provider,
-                   t.created_at, t.updated_at, t.payload_json
+                   t.created_at, t.updated_at, t.payload_json, p.workspace_root
             FROM orchestration_v2_projection_threads t
             LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
             WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
@@ -55,6 +55,7 @@ public struct T3CodeStateReader: Sendable {
                 id: id,
                 projectId: row.text(1) ?? "",
                 projectName: row.text(2),
+                projectRoot: row.text(8),
                 title: row.text(3) ?? "",
                 branch: payload["branch"] as? String,
                 worktreePath: payload["worktreePath"] as? String,

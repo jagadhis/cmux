@@ -143,6 +143,8 @@
 		C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
+		C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */ = {isa = PBXBuildFile; fileRef = 044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */; };
+		312509E4A967A9D2ACB0F98C /* AgentHomeT3SidebarRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */; };
 		AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */; };
 		A61E00010000000000000001 /* AgentHookDeliveryEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61E00010000000000000003 /* AgentHookDeliveryEvent.swift */; };
 		A61E00010000000000000005 /* AgentHookDeliveryProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A61E00010000000000000006 /* AgentHookDeliveryProcess.swift */; };
@@ -4938,6 +4940,8 @@
 		1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedModel.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
+		044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3Model.swift; sourceTree = "<group>"; };
+		78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3SidebarRows.swift; sourceTree = "<group>"; };
 		D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeTaskOverviewView.swift; sourceTree = "<group>"; };
 		A61E00010000000000000003 /* AgentHookDeliveryEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookDeliveryEvent.swift; sourceTree = "<group>"; };
 		A61E00010000000000000006 /* AgentHookDeliveryProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHookDeliveryProcess.swift; sourceTree = "<group>"; };
@@ -12456,6 +12460,8 @@
 				B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */,
 				1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */,
 				D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */,
+				044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */,
+				78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -15006,6 +15012,8 @@
 				C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
+				C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */,
+				312509E4A967A9D2ACB0F98C /* AgentHomeT3SidebarRows.swift in Sources */,
 				AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */,
 				A61E00010000000000000001 /* AgentHookDeliveryEvent.swift in Sources */,
 				A61E00010000000000000005 /* AgentHookDeliveryProcess.swift in Sources */,

@@ -38,6 +38,8 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     public var projectId: String
     /// The T3 project title, or `nil` when the project is unknown.
     public var projectName: String?
+    /// The T3 project's root directory, when known.
+    public var projectRoot: String?
     /// The thread title.
     public var title: String
     /// The branch the thread worked on.
@@ -59,6 +61,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     ///   - id: The T3 thread id.
     ///   - projectId: The T3 project id.
     ///   - projectName: The T3 project title.
+    ///   - projectRoot: The T3 project's root directory.
     ///   - title: The thread title.
     ///   - branch: The branch the thread worked on.
     ///   - worktreePath: The worktree or directory the thread worked in.
@@ -70,6 +73,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         id: String,
         projectId: String,
         projectName: String?,
+        projectRoot: String? = nil,
         title: String,
         branch: String? = nil,
         worktreePath: String? = nil,
@@ -81,6 +85,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         self.id = id
         self.projectId = projectId
         self.projectName = projectName
+        self.projectRoot = projectRoot
         self.title = title
         self.branch = branch
         self.worktreePath = worktreePath
@@ -108,6 +113,8 @@ public struct T3TaskProposal: Identifiable, Hashable, Sendable {
     public var projectId: String
     /// The T3 project title.
     public var projectName: String
+    /// The T3 project's root directory, when known.
+    public var projectRoot: String?
     /// The proposed task title.
     public var title: String
     /// The shared branch.
@@ -195,6 +202,7 @@ public enum T3ThreadGrouping {
                 id: key,
                 projectId: first.projectId,
                 projectName: first.projectName ?? "",
+                projectRoot: first.projectRoot,
                 title: title(for: sorted, branch: branch),
                 branch: branch,
                 worktreePath: sorted.lazy.compactMap(\.worktreePath).first,

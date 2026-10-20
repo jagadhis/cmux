@@ -8,8 +8,15 @@ import SwiftUI
 struct AgentHomeSidebarView: View {
     @ObservedObject var tabManager: TabManager
 
+    /// Projects whose T3 tasks are all shown, keyed by group id or T3 project id.
+    @State private var expandedT3Lists: Set<String> = []
+
+    private let t3Model = AgentHomeT3Model.shared
+    private static let collapsedT3Count = 3
+
     var body: some View {
         let snapshot = AgentHomeSnapshotBuilder.snapshot(tabManager: tabManager, feed: AgentHomeFeedModel.shared.signals())
+        let t3 = t3Model.sections(tabManager: tabManager)
         let shortcutNumbers = Dictionary(
             uniqueKeysWithValues: snapshot.listedTasks.prefix(9).enumerated().map { ($1.id, $0 + 1) }
         )
@@ -35,6 +42,7 @@ struct AgentHomeSidebarView: View {
                         ForEach(project.tasks) { task in
                             taskRow(task, indented: true, shortcut: shortcutNumbers[task.id])
                         }
+                        t3Rows(t3.byGroup[project.id] ?? [], listKey: project.id.uuidString, indented: true)
                     }
                 }
 
@@ -48,11 +56,49 @@ struct AgentHomeSidebarView: View {
                         taskRow(task, indented: false, shortcut: shortcutNumbers[task.id])
                     }
                 }
+
+                if !t3.t3OnlyProjects.isEmpty {
+                    AgentHomeSectionLabel(
+                        title: String(localized: "agentHome.sidebar.fromT3", defaultValue: "From T3 Code")
+                    )
+                    ForEach(t3.t3OnlyProjects) { project in
+                        AgentHomeT3ProjectRow(name: project.name, taskCount: project.tasks.count)
+                        t3Rows(project.tasks, listKey: project.id, indented: true)
+                    }
+                }
+
+                if t3.unsortedCount > 0 {
+                    AgentHomeT3UnsortedRow(count: t3.unsortedCount)
+                        .padding(.top, 10)
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
         .scrollIndicators(.never)
+        .onAppear { t3Model.startIfNeeded() }
+    }
+
+    @ViewBuilder
+    private func t3Rows(_ proposals: [T3TaskProposal], listKey: String, indented: Bool) -> some View {
+        let isExpanded = expandedT3Lists.contains(listKey)
+        let visible = isExpanded ? proposals : Array(proposals.prefix(Self.collapsedT3Count))
+        ForEach(visible) { proposal in
+            AgentHomeT3TaskRow(proposal: proposal, indented: indented) {
+                t3Model.open(proposal, tabManager: tabManager)
+            }
+        }
+        if proposals.count > Self.collapsedT3Count {
+            AgentHomeT3MoreRow(
+                hiddenCount: proposals.count - Self.collapsedT3Count,
+                isExpanded: isExpanded,
+                indented: indented
+            ) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    if isExpanded { expandedT3Lists.remove(listKey) } else { expandedT3Lists.insert(listKey) }
+                }
+            }
+        }
     }
 
     private func taskRow(_ task: AgentHomeTask, indented: Bool, shortcut: Int?) -> some View {
