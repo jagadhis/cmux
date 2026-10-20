@@ -54,6 +54,16 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     public var updatedAt: Date?
     /// Pull requests linked to the thread.
     public var pullRequests: [PullRequest]
+    /// The thread that created this one (a sub-thread's parent), if any.
+    public var parentThreadId: String?
+    /// The top of this thread's lineage, if it has a parent.
+    public var rootThreadId: String?
+    /// How this thread relates to its parent, such as `subagent` or `fork`.
+    public var relationshipToParent: String?
+    /// The status of the thread's latest run, such as `running` or `completed`.
+    public var latestRunStatus: String?
+    /// Whether the thread has a request waiting on the user.
+    public var hasPendingRequest: Bool
 
     /// Creates a T3 thread.
     ///
@@ -69,6 +79,11 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     ///   - createdAt: When the thread was created.
     ///   - updatedAt: When the thread was last updated.
     ///   - pullRequests: Pull requests linked to the thread.
+    ///   - parentThreadId: The thread that created this one.
+    ///   - rootThreadId: The top of this thread's lineage.
+    ///   - relationshipToParent: How this thread relates to its parent.
+    ///   - latestRunStatus: The status of the thread's latest run.
+    ///   - hasPendingRequest: Whether a request is waiting on the user.
     public init(
         id: String,
         projectId: String,
@@ -80,7 +95,12 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         provider: String,
         createdAt: Date? = nil,
         updatedAt: Date? = nil,
-        pullRequests: [PullRequest] = []
+        pullRequests: [PullRequest] = [],
+        parentThreadId: String? = nil,
+        rootThreadId: String? = nil,
+        relationshipToParent: String? = nil,
+        latestRunStatus: String? = nil,
+        hasPendingRequest: Bool = false
     ) {
         self.id = id
         self.projectId = projectId
@@ -93,6 +113,11 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.pullRequests = pullRequests
+        self.parentThreadId = parentThreadId
+        self.rootThreadId = rootThreadId
+        self.relationshipToParent = relationshipToParent
+        self.latestRunStatus = latestRunStatus
+        self.hasPendingRequest = hasPendingRequest
     }
 
     /// The agent behind the thread, from its provider instance id.

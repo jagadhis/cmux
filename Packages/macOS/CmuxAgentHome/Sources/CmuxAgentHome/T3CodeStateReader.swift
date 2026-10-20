@@ -42,7 +42,11 @@ public struct T3CodeStateReader: Sendable {
         let pullRequests = try readPullRequests(db)
         let sql = """
             SELECT t.thread_id, t.project_id, p.title, t.title, t.default_provider,
-                   t.created_at, t.updated_at, t.payload_json, p.workspace_root
+                   t.created_at, t.updated_at, t.payload_json, p.workspace_root,
+                   (SELECT r.status FROM orchestration_v2_projection_runs r
+                     WHERE r.thread_id = t.thread_id ORDER BY r.ordinal DESC LIMIT 1),
+                   (SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
+                     WHERE q.thread_id = t.thread_id AND q.status = 'pending')
             FROM orchestration_v2_projection_threads t
             LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
             WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
@@ -50,6 +54,7 @@ public struct T3CodeStateReader: Sendable {
             """
         return try query(db, sql) { row in
             let payload = Self.jsonObject(row.text(7))
+            let lineage = payload["lineage"] as? [String: Any]
             let id = row.text(0) ?? ""
             return T3Thread(
                 id: id,
@@ -62,7 +67,12 @@ public struct T3CodeStateReader: Sendable {
                 provider: (payload["providerInstanceId"] as? String) ?? row.text(4) ?? "",
                 createdAt: Self.date(row.text(5)),
                 updatedAt: Self.date(row.text(6)),
-                pullRequests: pullRequests[id] ?? []
+                pullRequests: pullRequests[id] ?? [],
+                parentThreadId: lineage?["parentThreadId"] as? String,
+                rootThreadId: lineage?["rootThreadId"] as? String,
+                relationshipToParent: lineage?["relationshipToParent"] as? String,
+                latestRunStatus: row.text(9),
+                hasPendingRequest: row.int(10) > 0
             )
         }
     }

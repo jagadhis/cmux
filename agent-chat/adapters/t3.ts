@@ -212,6 +212,57 @@ async function refresh(sess: SessionCtx, s: T3State) {
   }
 }
 
+// MARK: - New threads
+
+const STATE_DB = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "statev2.sqlite");
+
+/** The settings a new thread in this project starts with: the project's
+ * default model, else the project's most recent thread's model and modes. */
+function launchDefaults(projectId: string): { modelSelection: unknown; runtimeMode: string; interactionMode: string } {
+  const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+  const db = new Database(STATE_DB, { readonly: true });
+  try {
+    const project = db.query("SELECT default_model_selection_json FROM projection_projects WHERE project_id = ?").get(projectId) as
+      | { default_model_selection_json: string | null }
+      | null;
+    const latest = db.query(
+      "SELECT payload_json FROM orchestration_v2_projection_threads WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+    ).get(projectId) as { payload_json: string } | null;
+    const payload = latest ? JSON.parse(latest.payload_json) : {};
+    const projectModel = project?.default_model_selection_json ? JSON.parse(project.default_model_selection_json) : null;
+    const modelSelection = projectModel ?? payload.modelSelection;
+    if (!modelSelection) throw new Error("Pick a model for this project in T3 first; it has no default and no earlier threads.");
+    return {
+      modelSelection,
+      runtimeMode: payload.runtimeMode ?? "full-access",
+      interactionMode: payload.interactionMode ?? "default",
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** Starts a new T3 thread in a project with a first message; T3 names it. */
+export async function launchT3Thread(input: { projectId: string; text: string }): Promise<{ threadId: string }> {
+  const text = input.text.trim();
+  if (!text) throw new Error("Type what the agent should do.");
+  const defaults = launchDefaults(input.projectId);
+  const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? text;
+  const result = await run<{ threadId: string }>((client) => client["orchestration.launchThread"]({
+    commandId: crypto.randomUUID(),
+    creationSource: "web",
+    projectId: input.projectId,
+    title: firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine,
+    generateTitle: true,
+    modelSelection: defaults.modelSelection,
+    runtimeMode: defaults.runtimeMode,
+    interactionMode: defaults.interactionMode,
+    workspaceStrategy: { type: "root" },
+    initialMessage: { text, attachments: [] },
+  }));
+  return { threadId: String(result.threadId) };
+}
+
 /** Answers the thread's pending approval in T3. */
 export async function respondT3Request(sess: SessionCtx, requestId: string, decision: "accept" | "acceptForSession" | "decline") {
   const s = state(sess);

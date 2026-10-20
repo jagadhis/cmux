@@ -1,0 +1,150 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0}#fit{width:100%;overflow:hidden}
+#stage{width:1280px;padding:24px;box-sizing:border-box;transform-origin:top left;border-radius:16px;background:radial-gradient(900px 520px at 10% -10%,#2b3150 0%,transparent 60%),radial-gradient(800px 600px at 105% 110%,#3b2740 0%,transparent 55%),#0d0d10}
+*{box-sizing:border-box}
+.win{position:relative;height:760px;border-radius:14px;overflow:hidden;display:flex;background:#141416;box-shadow:0 0 0 .5px rgba(255,255,255,.13),0 40px 90px rgba(0,0,0,.6);font:13px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;color:#ececef;-webkit-font-smoothing:antialiased}
+svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+/* sidebar */
+.sb{width:228px;flex:none;padding:12px 8px;display:flex;flex-direction:column;background:#17171a;border-right:.5px solid rgba(255,255,255,.07)}
+.lights{display:flex;gap:8px;padding:3px 8px 14px}.lights i{width:12px;height:12px;border-radius:50%}
+.new{display:flex;align-items:center;gap:8px;height:30px;margin:0 2px 10px;padding:0 10px;border-radius:8px;background:rgba(255,255,255,.07);color:#ececef;font-weight:500;cursor:pointer}
+.new kbd{margin-left:auto;font:500 10.5px -apple-system;color:#77777f}
+.it{display:flex;align-items:center;gap:9px;height:28px;padding:0 9px;margin:1px 2px;border-radius:7px;color:#c6c6cc;cursor:pointer;white-space:nowrap}
+.it:hover{background:rgba(255,255,255,.05)}.it.on{background:rgba(255,255,255,.09);color:#fff}
+.it .r{margin-left:auto;font-size:11.5px;color:#6c6c74;display:flex;gap:6px;align-items:center}
+.cap{font-size:11px;font-weight:600;color:#5f5f68;padding:14px 11px 5px}
+.pj{width:15px;height:15px;border-radius:4px;display:grid;place-items:center;font:700 9px -apple-system;color:#fff;flex:none}
+.tk{padding-left:33px}.tk2{padding-left:45px;font-size:12.5px;color:#a6a6ad}.tk2 span:first-child{overflow:hidden;text-overflow:ellipsis}.sub{font-size:10.5px;color:#7c7c84;background:rgba(255,255,255,.06);border-radius:8px;padding:0 6px}.tk span:first-child{overflow:hidden;text-overflow:ellipsis}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.amber{background:#f0b44c;box-shadow:0 0 0 3px rgba(240,180,76,.16)}
+.run{background:#7d8bff;animation:p 1.6s infinite}@keyframes p{0%,100%{box-shadow:0 0 0 0 rgba(125,139,255,.5)}50%{box-shadow:0 0 0 4px rgba(125,139,255,0)}}
+.t3{font:700 8.5px -apple-system;color:#8a8a92;background:rgba(255,255,255,.07);border-radius:3px;padding:1px 4px}
+/* main */
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.hd{height:50px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:.5px solid rgba(255,255,255,.07)}
+.hd .crumb{color:#6c6c74}.hd b{font-weight:600}
+.hd .meta{display:flex;gap:12px;color:#7c7c84;font-size:12px;margin-left:8px}
+.hd .meta span{display:flex;gap:5px;align-items:center}
+.tabs{margin-left:auto;display:flex;padding:2px;border-radius:8px;background:rgba(255,255,255,.05)}.tab{height:24px;padding:0 11px;border-radius:6px;display:flex;align-items:center;gap:6px;font-size:12px;color:#9a9aa2;cursor:pointer}.tab.on{background:rgba(255,255,255,.12);color:#fff}.cnt{font-size:10.5px;color:#9aa5ff}.sync{margin-left:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#9a9aa2;padding:3px 9px;border-radius:20px;background:rgba(255,255,255,.05)}
+.sync i{width:6px;height:6px;border-radius:50%;background:#5fbf8b}
+.ib{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:#8a8a92;cursor:pointer}.ib:hover,.ib.on{background:rgba(255,255,255,.08);color:#fff}
+.body{flex:1;display:flex;min-height:0}
+.chat{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.scroll{flex:1;overflow:hidden;padding:22px 0 120px}
+.col{max-width:640px;margin:0 auto;padding:0 28px;display:flex;flex-direction:column;gap:16px}
+.you{align-self:flex-end;max-width:80%;background:rgba(255,255,255,.07);padding:9px 13px;border-radius:14px 14px 4px 14px}
+.ai{color:#dcdce2}
+.ai code{font:12px "SF Mono",Menlo,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px}
+.tools{display:flex;align-items:center;gap:7px;color:#7c7c84;font-size:12.5px;cursor:pointer}
+.tools svg{width:12px;height:12px}
+.tools:hover{color:#b6b6bd}
+.toolist{margin:6px 0 0 19px;display:none;gap:3px;flex-direction:column;font-size:12px;color:#8a8a92}
+.toolist.open{display:flex}
+.toolist .mono{font-size:11.5px}
+.ok{color:#6fcf97}.de{color:#e88384}
+.working{display:flex;align-items:center;gap:8px;color:#9a9aa2;font-size:12.5px}
+.spin{width:12px;height:12px;border-radius:50%;border:1.5px solid rgba(125,139,255,.25);border-top-color:#9aa5ff;animation:r .8s linear infinite}@keyframes r{to{transform:rotate(360deg)}}
+.shim{background:linear-gradient(90deg,#8a8a92,#fff 45%,#8a8a92 90%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:s 2.2s linear infinite}@keyframes s{from{background-position:120% 0}to{background-position:-120% 0}}
+.ask{border-radius:12px;background:rgba(240,180,76,.06);box-shadow:inset 0 0 0 .5px rgba(240,180,76,.35);padding:12px 14px}
+.ask .t{font-weight:600;font-size:12.5px;display:flex;gap:7px;align-items:center;color:#f3c46d}
+.ask .cmd{margin:8px 0 10px;font:12px "SF Mono",Menlo,monospace;color:#cfcfd5;background:rgba(0,0,0,.25);border-radius:7px;padding:7px 10px}
+.btns{display:flex;gap:6px}
+.btn{height:28px;padding:0 12px;border-radius:7px;display:flex;align-items:center;font-size:12.5px;font-weight:500;background:rgba(255,255,255,.08);cursor:pointer}
+.btn.pri{background:#ececef;color:#141416}.btn:active{transform:scale(.97)}
+.comp{position:absolute;left:24px;right:24px;bottom:16px}
+.cbox{max-width:640px;margin:0 auto;border-radius:14px;background:#1d1d21;box-shadow:0 0 0 .5px rgba(255,255,255,.11),0 14px 36px rgba(0,0,0,.45);padding:11px 12px 9px 14px}
+.cbox input{width:100%;background:none;border:0;outline:0;color:#ececef;font:13.5px -apple-system,system-ui,sans-serif}
+.cbox input::placeholder{color:#6c6c74}
+.crow{display:flex;align-items:center;gap:12px;margin-top:9px;font-size:12px;color:#8a8a92}
+.crow span{display:flex;gap:5px;align-items:center;cursor:pointer}
+.send{margin-left:auto;width:26px;height:26px;border-radius:50%;background:#ececef;color:#141416;display:grid;place-items:center;cursor:pointer}
+/* session panel */
+.sess{width:430px;flex:none;border-left:.5px solid rgba(255,255,255,.07);display:flex;flex-direction:column;background:#101012;transition:width .25s cubic-bezier(.2,.8,.2,1);overflow:hidden}
+.sess.hide{width:0}
+.sh{height:36px;display:flex;align-items:center;gap:8px;padding:0 12px;font-size:12px;color:#8a8a92;border-bottom:.5px solid rgba(255,255,255,.06);white-space:nowrap}
+.term{flex:1;padding:12px 14px;font:11.5px/1.65 "SF Mono",ui-monospace,Menlo,monospace;color:#c9c9cf;white-space:pre;overflow:hidden}
+.term .m{color:#5f5f68}.term .a{color:#e0906e}.term .g{color:#6fcf97}.term .p{color:#9aa5ff}
+.ov{flex:1;overflow:hidden;padding:24px 28px 120px}.ovh{font-size:12px;font-weight:600;color:#6c6c74;margin-bottom:12px}.ovh span{font-weight:400;color:#8a8a92;margin-left:6px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{border-radius:12px;background:rgba(255,255,255,.035);box-shadow:inset 0 0 0 .5px rgba(255,255,255,.07);padding:12px 14px;cursor:pointer;transition:background .15s}.card:hover{background:rgba(255,255,255,.06)}.card.needs{box-shadow:inset 0 0 0 .5px rgba(240,180,76,.4)}.card.done{opacity:.7}.ct{display:flex;align-items:center;gap:10px}.ct b{font-weight:600;font-size:13px;display:block}.ct small{font-size:11.5px;color:#7c7c84}.av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:12px;flex:none}.av.a{background:rgba(217,119,87,.16);color:#e0906e}.av.x{background:rgba(255,255,255,.1);color:#e6e6ea}.pill{margin-left:auto;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:20px}.pill.y{background:rgba(240,180,76,.13);color:#f3c46d}.pill.b{background:rgba(125,139,255,.14);color:#a8b2ff}.pill.g{background:rgba(95,191,139,.13);color:#7fd3a5}.cn{margin:9px 0 0 36px;font-size:12.5px;color:#a6a6ad}.cn code{font:11.5px "SF Mono",Menlo,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px}.crumbsub{color:#9aa5ff}
+.toast{position:absolute;right:18px;top:62px;padding:8px 12px;border-radius:10px;background:#26262b;box-shadow:0 0 0 .5px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.5);font-size:12px;opacity:0;transform:translateY(-6px);transition:all .25s}
+.toast.show{opacity:1;transform:none}
+.fade{animation:f .35s ease}@keyframes f{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.hint{margin-top:12px;text-align:center;font:11.5px -apple-system,system-ui,sans-serif;color:#5a5a64}
+</style></head><body><div id="fit"><div id="stage"><div class="win">
+<aside class="sb">
+ <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+ <div class="new"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New chat<kbd>⌘N</kbd></div>
+ <div class="it"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/></svg>Needs you<span class="r"><span class="dot amber"></span></span></div>
+ <div class="it"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Running<span class="r">1</span></div>
+ <div class="cap">Projects</div>
+ <div class="it"><span class="pj" style="background:#d9734a">O</span>oorva-app<span class="r">⌃</span></div>
+ <div class="it tk on" onclick="show('chat')"><span>Voice relay v4 Flash</span><span class="r"><span class="sub">3</span><span class="dot amber"></span></span></div>
+ <div class="it tk2" onclick="show('chat','research')"><span>↳ Research Bulbul latency</span><span class="r"><span class="dot run"></span></span></div>
+ <div class="it tk2" onclick="show('chat','review')"><span>↳ Review the diff</span><span class="r"><span class="dot run"></span></span></div>
+ <div class="it tk2" style="color:#6c6c74"><span>↳ Map fallback paths</span><span class="r">✓</span></div>
+ <div class="it tk"><span>Booking feedback</span><span class="r"><span class="sub">1</span></span></div>
+ <div class="it tk"><span>Oorva voice refinements</span></div>
+ <div class="it"><span class="pj" style="background:#5a6be0">D</span>devjags-portfolio<span class="r">6 ⌄</span></div>
+ <div class="it"><span class="pj" style="background:#2f9e8f">A</span>autopilot<span class="r">4 ⌄</span></div>
+</aside>
+<section class="main">
+ <div class="hd"><span class="crumb">oorva-app</span><span class="crumb">›</span><b>Voice relay v4 Flash</b>
+  <div class="meta"><span class="mono" style="font-size:11.5px">⎇ feat/voice-bulbul-v4-flash</span><span>#188</span></div>
+  <div class="tabs"><div class="tab on" id="tchat" onclick="show('chat')">Chat</div><div class="tab" id="tov" onclick="show('overview')">Overview <span class="cnt">4</span></div></div><div class="sync"><i></i>Synced with T3</div>
+  <div class="ib on" id="sbtn" title="Terminal (⌘J)" onclick="toggleSess()"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg></div>
+ </div>
+ <div class="body">
+  <div class="chat">
+   <div class="ov" id="ov" style="display:none">
+    <div class="ovh">Sessions in this task <span>4 · 2 live</span></div>
+    <div class="cards">
+     <div class="card needs" onclick="show('chat')"><div class="ct"><span class="av a">✳</span><div><b>Voice relay v4 Flash</b><small>Main thread · Claude Opus · 38m</small></div><span class="pill y">Needs you</span></div><div class="cn">Wants to run <code>fly deploy --strategy canary</code></div></div>
+     <div class="card" onclick="show('chat','research')"><div class="ct"><span class="av a">✳</span><div><b>Research Bulbul latency</b><small>Sub-thread · Claude Sonnet · 6m</small></div><span class="pill b">Working</span></div><div class="cn"><span class="shim">Reading Sarvam latency benchmarks…</span></div></div>
+     <div class="card" onclick="show('chat','review')"><div class="ct"><span class="av x">⬡</span><div><b>Review the diff</b><small>Sub-thread · Codex · 3m</small></div><span class="pill b">Working</span></div><div class="cn"><span class="shim">Checking the fallback timeout path…</span></div></div>
+     <div class="card done"><div class="ct"><span class="av a">✳</span><div><b>Map fallback paths</b><small>Sub-thread · Claude Sonnet · 1h ago</small></div><span class="pill g">Done</span></div><div class="cn">Listed the 3 code paths that call the v3 model directly.</div></div>
+    </div></div>
+   <div class="scroll" id="chatscroll"><div class="col" id="col">
+    <div class="you">Switch the voice relay to Bulbul v4 Flash with a fallback to v3, then run the voice tests.</div>
+    <div><div class="tools" onclick="this.nextElementSibling.classList.toggle('open')"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>Read 3 files, edited 2, ran tests</div>
+     <div class="toolist"><span class="mono">Edit services/voice/relay.ts <span class="ok">+42</span> <span class="de">−9</span></span><span class="mono">Edit services/voice/fallback.ts <span class="ok">+31</span></span><span class="mono">Bash bun test services/voice <span class="ok">38 passed</span></span></div></div>
+    <div class="ai">The relay now uses Bulbul v4 Flash and falls back to v3 after 1.2 s. The PCM16 stream format is unchanged, so the app needs no update. All 38 voice tests pass.</div>
+    <div class="you">Deploy a canary and watch latency.</div>
+    <div class="ask" id="ask"><div class="t"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>Claude wants to run a command</div>
+     <div class="cmd">fly deploy --app oorva-voice-relay --strategy canary</div>
+     <div class="btns"><div class="btn" onclick="deny()">Deny</div><div class="btn" onclick="allow()">Always allow</div><div class="btn pri" onclick="allow()">Allow</div></div></div>
+   </div></div>
+   <div class="comp"><div class="cbox"><input id="msg" placeholder="Message Claude…  Enter to send"><div class="crow"><span><b style="color:#e0906e">✳</b> Claude Opus</span><span>Effort: High</span><span>Accept edits</span><span class="mono" style="font-size:11.5px">~/projects/oorva-app</span><div class="send" onclick="send()"><svg viewBox="0 0 24 24" style="stroke-width:2.4;width:12px;height:12px"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div></div></div></div>
+  </div>
+  <div class="sess" id="sess">
+   <div class="sh"><svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 16h7"/></svg>Terminal<span style="margin-left:auto" class="mono">zsh · ~/projects/oorva-app</span></div>
+   <div class="term" id="term"><span class="p">❯</span> git status -sb
+<span class="m">## feat/voice-bulbul-v4-flash</span>
+ <span class="a">M</span> services/voice/relay.ts
+ <span class="g">??</span> services/voice/fallback.ts
+
+<span class="p">❯</span> bun run dev:relay
+relay listening :8080 model=<span class="p">bulbul-v4-flash</span>
+ws session 41f2 open  ttfb=<span class="g">212ms</span>
+ws session 41f2 close dur=38s
+ws session 41f3 open  ttfb=<span class="g">198ms</span>
+<span class="m">health ok · p95 ttfb 240ms</span></div>
+  </div>
+ </div>
+ <div class="toast" id="toast"></div>
+</section>
+</div><div class="hint">Interactive: switch Chat / Overview, click a sub-thread or a session card, approve the deploy, or toggle the terminal (top right)</div></div></div>
+<script>
+const $=id=>document.getElementById(id);
+function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200)}
+function show(view,sub){const ov=view==='overview';$('ov').style.display=ov?'block':'none';$('chatscroll').style.display=ov?'none':'block';document.querySelector('.comp').style.display=ov?'none':'block';$('tchat').classList.toggle('on',!ov);$('tov').classList.toggle('on',ov);const b=document.querySelector('.hd b');b.innerHTML=sub==='research'?'Voice relay v4 Flash <span class="crumb">›</span> <span class="crumbsub">Research Bulbul latency</span>':sub==='review'?'Voice relay v4 Flash <span class="crumb">›</span> <span class="crumbsub">Review the diff</span>':'Voice relay v4 Flash';if(sub)toast('Opened the sub-thread chat');}
+function toggleSess(){$('sess').classList.toggle('hide');$('sbtn').classList.toggle('on')}
+function working(text){const w=document.createElement('div');w.className='working fade';w.innerHTML='<span class="spin"></span><span class="shim">'+text+'</span>';$('col').appendChild(w);return w}
+function allow(){const a=$('ask');if(!a)return;a.remove();toast('Approved · also synced to the T3 thread');
+  const w=working('Deploying canary to bom…');setTimeout(()=>{w.querySelector('.shim').textContent='Watching first-byte latency…'},2200);
+ setTimeout(()=>{w.remove();const d=document.createElement('div');d.className='ai fade';d.innerHTML='Canary is live. p95 first byte is <code>240 ms</code> and no requests fell back to v3 in the first 10 minutes.';$('col').appendChild(d);const c=document.querySelector('.card.needs');if(c){c.classList.remove('needs');c.querySelector('.pill').className='pill g';c.querySelector('.pill').textContent='Done'}},4800)}
+function deny(){const a=$('ask');a&&a.remove();toast('Denied · tell Claude what to do instead');$('msg').focus()}
+function send(){const v=$('msg').value.trim();if(!v)return;const y=document.createElement('div');y.className='you fade';y.textContent=v;$('col').appendChild(y);$('msg').value='';
+const w=working('Thinking…');setTimeout(()=>{w.remove();const d=document.createElement('div');d.className='ai fade';d.textContent='On it. I\'ll report back here, and the reply will show in T3 too.';$('col').appendChild(d)},1800)}
+$('msg').addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+function fit(){const a=$('stage'),f=$('fit');const s=Math.min(1,f.clientWidth/1280);a.style.transform='scale('+s+')';f.style.height=(a.offsetHeight*s)+'px'}addEventListener('resize',fit);fit();
+</script></body></html>

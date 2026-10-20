@@ -18,7 +18,7 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
-import { attachT3Thread, respondT3Request, t3Adapter } from "./adapters/t3";
+import { attachT3Thread, launchT3Thread, respondT3Request, t3Adapter } from "./adapters/t3";
 import type { T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
@@ -797,8 +797,20 @@ function resolveTranscriptSessionById(id: string): Session | undefined {
 // echo, idle disposal); `internal.t3` marks them and holds the pending request.
 const T3_SESSION_PREFIX = "t3-";
 
+// T3 thread ids can contain ":" (`thread:project:<id>:<id>`), which the
+// client's /s/<id> route doesn't accept, so session ids carry them base64url-encoded.
+function t3SessionId(threadId: string): string {
+  return `${T3_SESSION_PREFIX}${Buffer.from(threadId, "utf8").toString("base64url")}`;
+}
+
+function t3ThreadIdFromSessionId(id: string): string | undefined {
+  if (!id.startsWith(T3_SESSION_PREFIX)) return undefined;
+  const threadId = Buffer.from(id.slice(T3_SESSION_PREFIX.length), "base64url").toString("utf8");
+  return /^[0-9A-Za-z:_-]{8,160}$/.test(threadId) ? threadId : undefined;
+}
+
 function ensureT3Session(threadId: string): Session {
-  const id = `${T3_SESSION_PREFIX}${threadId}`;
+  const id = t3SessionId(threadId);
   const existing = sessions.get(id);
   if (existing) return existing;
   const sess = createSession("claude", DEFAULT_CWD, false, "T3 thread", {}, {}, { id, adapter: t3Adapter });
@@ -838,9 +850,8 @@ function ensureT3Session(threadId: string): Session {
 }
 
 function resolveT3SessionById(id: string): Session | undefined {
-  if (!id.startsWith(T3_SESSION_PREFIX)) return undefined;
-  const threadId = id.slice(T3_SESSION_PREFIX.length);
-  return /^[0-9A-Za-z-]{8,80}$/.test(threadId) ? ensureT3Session(threadId) : undefined;
+  const threadId = t3ThreadIdFromSessionId(id);
+  return threadId ? ensureT3Session(threadId) : undefined;
 }
 
 function cancelTranscriptDispose(sess: Session) {
@@ -2238,9 +2249,23 @@ function startServer() {
       if (prompt) sendPrompt(sess, prompt);
       return Response.json({ id: sess.id, url: `http://127.0.0.1:${server.port}${prefixedPath(`/s/${sess.id}`)}` });
     }
-    const t3Match = url.pathname.match(/^\/t3\/([0-9A-Za-z-]{8,80})\/?$/);
+    if (url.pathname === "/api/t3/threads" && req.method === "POST") {
+      try {
+        const body = (await req.json()) as { projectId?: unknown; text?: unknown };
+        if (typeof body.projectId !== "string" || typeof body.text !== "string") {
+          return Response.json({ error: "projectId and text are required" }, { status: 400 });
+        }
+        const { threadId } = await launchT3Thread({ projectId: body.projectId, text: body.text });
+        return Response.json({ threadId, path: prefixedPath(`/t3/${encodeURIComponent(threadId)}`) });
+      } catch (err) {
+        return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
+      }
+    }
+    const t3Match = url.pathname.match(/^\/t3\/([0-9A-Za-z:%_-]{8,200})\/?$/);
     if (t3Match && req.method === "GET") {
-      const sess = ensureT3Session(t3Match[1]);
+      const threadId = decodeURIComponent(t3Match[1]);
+      if (!/^[0-9A-Za-z:_-]{8,160}$/.test(threadId)) return new Response("Not a T3 thread id", { status: 404 });
+      const sess = ensureT3Session(threadId);
       scheduleTranscriptDispose(sess);
       return new Response(null, { status: 302, headers: { location: `${prefixedPath(`/s/${sess.id}`)}${url.search}` } });
     }
