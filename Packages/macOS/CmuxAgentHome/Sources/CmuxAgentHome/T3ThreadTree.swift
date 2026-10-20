@@ -32,6 +32,16 @@ public struct T3TaskNode: Identifiable, Hashable, Sendable {
     /// Sub-threads anywhere below it, most recently updated first.
     public var subThreads: [T3Thread]
 
+    /// Creates a task.
+    ///
+    /// - Parameters:
+    ///   - thread: The thread the user started.
+    ///   - subThreads: Sub-threads below it.
+    public init(thread: T3Thread, subThreads: [T3Thread] = []) {
+        self.thread = thread
+        self.subThreads = subThreads
+    }
+
     /// The task id: the root thread's id.
     public var id: String { thread.id }
 
@@ -63,6 +73,22 @@ public struct T3ProjectNode: Identifiable, Hashable, Sendable {
     public var recentTasks: [T3TaskNode]
     /// Older, quiet tasks, most recent first.
     public var olderTasks: [T3TaskNode]
+
+    /// Creates a project node.
+    ///
+    /// - Parameters:
+    ///   - id: The T3 project id, or an empty string for threads without a project.
+    ///   - name: The project name.
+    ///   - root: The project's root directory.
+    ///   - recentTasks: Recent tasks, most recent first.
+    ///   - olderTasks: Older tasks, most recent first.
+    public init(id: String, name: String, root: String?, recentTasks: [T3TaskNode], olderTasks: [T3TaskNode]) {
+        self.id = id
+        self.name = name
+        self.root = root
+        self.recentTasks = recentTasks
+        self.olderTasks = olderTasks
+    }
 
     /// When any task in the project last changed.
     public var lastActivity: Date? {

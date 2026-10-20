@@ -1,8 +1,9 @@
 import CmuxAgentHome
 import SwiftUI
 
-/// The Agent Home left sidebar: the Needs you / Running / Ready for review
-/// views, then projects with their tasks.
+/// The Agent Home left sidebar: New chat, the Needs you / Running / Ready for
+/// review views, then projects with their tasks. T3 Code threads are tasks
+/// too, with the sub-threads their agents created nested under them.
 ///
 /// Clicking a view jumps to the next task in it, cycling from the selected task.
 struct AgentHomeSidebarView: View {
@@ -10,38 +11,43 @@ struct AgentHomeSidebarView: View {
 
     /// Projects whose T3 tasks are all shown, keyed by group id or T3 project id.
     @State private var expandedT3Lists: Set<String> = []
+    @State private var isNewChatPresented = false
     /// Collapsed T3-only projects (cmux projects use the group's own collapsed flag).
     @AppStorage("agentHomeCollapsedT3Projects") private var collapsedT3ProjectsRaw = ""
-    @AppStorage("agentHomeT3SectionCollapsed") private var isT3SectionCollapsed = false
 
     private let t3Model = AgentHomeT3Model.shared
-    private static let collapsedT3Count = 3
+    private static let collapsedT3Count = 5
+    private static let collapsedSubThreadCount = 6
 
     var body: some View {
         let snapshot = AgentHomeSnapshotBuilder.snapshot(tabManager: tabManager, feed: AgentHomeFeedModel.shared.signals())
-        let t3 = t3Model.sections(tabManager: tabManager)
+        let layout = t3Layout(snapshot: snapshot)
         let shortcutNumbers = Dictionary(
             uniqueKeysWithValues: snapshot.listedTasks.prefix(9).enumerated().map { ($1.id, $0 + 1) }
         )
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 1) {
+                AgentHomeNewChatButton { isNewChatPresented = true }
+                    .padding(.bottom, 8)
+
                 ForEach(AgentHomeFilter.allCases, id: \.self) { filter in
-                    AgentHomeFilterRow(filter: filter, count: snapshot.count(of: filter)) {
-                        jump(to: filter, in: snapshot)
+                    AgentHomeFilterRow(filter: filter, count: snapshot.count(of: filter) + layout.t3Count(filter)) {
+                        jump(to: filter, in: snapshot, layout: layout)
                     }
                 }
 
-                if !snapshot.projects.isEmpty {
+                if !snapshot.projects.isEmpty || !layout.t3OnlyProjects.isEmpty {
                     AgentHomeSectionLabel(
                         title: String(localized: "agentHome.sidebar.projects", defaultValue: "Projects")
                     )
                     ForEach(snapshot.projects) { project in
                         let isCollapsed = collapsedGroupIds.contains(project.id)
+                        let t3Project = layout.t3ByGroup[project.id]
                         AgentHomeProjectRow(
                             project: project,
                             isSelected: project.home.map { $0.id == tabManager.selectedTabId } ?? false,
                             isCollapsed: isCollapsed,
-                            hiddenT3Count: (t3.byGroup[project.id] ?? []).count,
+                            hiddenT3Count: t3Project.map { $0.recentTasks.count + $0.olderTasks.count } ?? 0,
                             onOpen: { if let home = project.home { tabManager.focusTab(home.id) } },
                             onToggleCollapsed: {
                                 withAnimation(.easeOut(duration: 0.2)) {
@@ -50,52 +56,41 @@ struct AgentHomeSidebarView: View {
                             }
                         )
                         if !isCollapsed {
-                            ForEach(project.tasks) { task in
+                            ForEach(project.tasks.filter { !layout.linkedWorkspaceIds.contains($0.id) }) { task in
                                 taskRow(task, indented: true, shortcut: shortcutNumbers[task.id])
                             }
-                            t3Rows(t3.byGroup[project.id] ?? [], listKey: project.id.uuidString, indented: true)
+                            if let t3Project {
+                                t3TaskRows(t3Project, listKey: project.id.uuidString, layout: layout)
+                            }
+                        }
+                    }
+                    ForEach(layout.t3OnlyProjects) { project in
+                        let isCollapsed = collapsedT3Projects.contains(project.id)
+                        AgentHomeT3ProjectRow(
+                            name: project.name.isEmpty
+                                ? String(localized: "agentHome.sidebar.noProject", defaultValue: "No project")
+                                : project.name,
+                            taskCount: project.recentTasks.count + project.olderTasks.count,
+                            isCollapsed: isCollapsed
+                        ) {
+                            withAnimation(.easeOut(duration: 0.2)) { toggleT3Project(project.id) }
+                        }
+                        if !isCollapsed {
+                            t3TaskRows(project, listKey: "t3:\(project.id)", layout: layout)
                         }
                     }
                 }
 
-                if !snapshot.ungroupedTasks.isEmpty {
+                let ungrouped = snapshot.ungroupedTasks.filter { !layout.linkedWorkspaceIds.contains($0.id) }
+                if !ungrouped.isEmpty {
                     AgentHomeSectionLabel(
-                        title: snapshot.projects.isEmpty
+                        title: snapshot.projects.isEmpty && layout.t3OnlyProjects.isEmpty
                             ? String(localized: "agentHome.sidebar.tasks", defaultValue: "Tasks")
                             : String(localized: "agentHome.sidebar.otherTasks", defaultValue: "Other tasks")
                     )
-                    ForEach(snapshot.ungroupedTasks) { task in
+                    ForEach(ungrouped) { task in
                         taskRow(task, indented: false, shortcut: shortcutNumbers[task.id])
                     }
-                }
-
-                if !t3.t3OnlyProjects.isEmpty {
-                    AgentHomeCollapsibleSectionLabel(
-                        title: String(localized: "agentHome.sidebar.fromT3", defaultValue: "From T3 Code"),
-                        isCollapsed: isT3SectionCollapsed
-                    ) {
-                        withAnimation(.easeOut(duration: 0.2)) { isT3SectionCollapsed.toggle() }
-                    }
-                    if !isT3SectionCollapsed {
-                        ForEach(t3.t3OnlyProjects) { project in
-                            let isCollapsed = collapsedT3Projects.contains(project.id)
-                            AgentHomeT3ProjectRow(
-                                name: project.name,
-                                taskCount: project.tasks.count,
-                                isCollapsed: isCollapsed
-                            ) {
-                                withAnimation(.easeOut(duration: 0.2)) { toggleT3Project(project.id) }
-                            }
-                            if !isCollapsed {
-                                t3Rows(project.tasks, listKey: project.id, indented: true)
-                            }
-                        }
-                    }
-                }
-
-                if t3.unsortedCount > 0 {
-                    AgentHomeT3UnsortedRow(count: t3.unsortedCount)
-                        .padding(.top, 10)
                 }
             }
             .padding(.horizontal, 8)
@@ -103,7 +98,86 @@ struct AgentHomeSidebarView: View {
         }
         .scrollIndicators(.never)
         .onAppear { t3Model.startIfNeeded() }
+        .sheet(isPresented: $isNewChatPresented) {
+            AgentHomeNewChatSheet(
+                projects: t3Model.projects.filter { !$0.id.isEmpty },
+                preselectedProjectId: layout.selectedTask.flatMap { t3Model.project(of: $0)?.id },
+                onStart: { projectId, text in
+                    try await t3Model.startNewChat(projectId: projectId, text: text, tabManager: tabManager)
+                }
+            )
+        }
     }
+
+    // MARK: - T3 layout
+
+    /// Where T3 projects and tasks go in the sidebar, worked out once per render.
+    struct T3Layout {
+        var t3ByGroup: [UUID: T3ProjectNode] = [:]
+        var t3OnlyProjects: [T3ProjectNode] = []
+        var linkedWorkspaceIds: Set<UUID> = []
+        var selectedTask: T3TaskNode?
+        var shownThreadId: String?
+        var allTasks: [T3TaskNode] = []
+
+        func t3Count(_ filter: AgentHomeFilter) -> Int {
+            switch filter {
+            case .needsYou: return allTasks.filter { $0.status == .needsYou }.count
+            case .running: return allTasks.filter { $0.status == .running }.count
+            case .readyForReview: return 0
+            }
+        }
+    }
+
+    private func t3Layout(snapshot: AgentHomeSnapshot) -> T3Layout {
+        var layout = T3Layout(linkedWorkspaceIds: t3Model.linkedWorkspaceIds)
+        let groupIds = Set(snapshot.projects.map(\.id))
+        for project in t3Model.projects {
+            layout.allTasks += project.recentTasks + project.olderTasks
+            if let groupId = t3Model.groupId(for: project, tabManager: tabManager), groupIds.contains(groupId),
+               layout.t3ByGroup[groupId] == nil {
+                layout.t3ByGroup[groupId] = project
+            } else {
+                layout.t3OnlyProjects.append(project)
+            }
+        }
+        if let selected = tabManager.selectedTabId {
+            layout.selectedTask = t3Model.task(forWorkspace: selected)
+            layout.shownThreadId = t3Model.shownThreadIds[selected]
+        }
+        return layout
+    }
+
+    @ViewBuilder
+    private func t3TaskRows(_ project: T3ProjectNode, listKey: String, layout: T3Layout) -> some View {
+        let isExpanded = expandedT3Lists.contains(listKey)
+        let all = project.recentTasks + project.olderTasks
+        let visible = isExpanded ? all : Array(project.recentTasks.prefix(Self.collapsedT3Count))
+        ForEach(visible) { task in
+            let isSelectedTask = layout.selectedTask?.id == task.id
+            let shown = isSelectedTask ? (layout.shownThreadId ?? task.thread.id) : nil
+            AgentHomeT3TaskRow(task: task, isSelected: shown == task.thread.id) {
+                t3Model.open(task, tabManager: tabManager)
+            }
+            let subThreads = isSelectedTask
+                ? Array(task.subThreads.prefix(Self.collapsedSubThreadCount))
+                : task.subThreads.filter { T3ThreadStatus.of($0) != .idle }
+            ForEach(subThreads, id: \.id) { subThread in
+                AgentHomeT3SubThreadRow(thread: subThread, isSelected: shown == subThread.id) {
+                    t3Model.open(task, thread: subThread, tabManager: tabManager)
+                }
+            }
+        }
+        if all.count > visible.count || isExpanded {
+            AgentHomeT3MoreRow(hiddenCount: all.count - visible.count, isExpanded: isExpanded, indented: true) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    if isExpanded { expandedT3Lists.remove(listKey) } else { expandedT3Lists.insert(listKey) }
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
 
     private var collapsedGroupIds: Set<UUID> {
         Set(tabManager.workspaceGroups.filter(\.isCollapsed).map(\.id))
@@ -119,28 +193,6 @@ struct AgentHomeSidebarView: View {
         collapsedT3ProjectsRaw = ids.sorted().joined(separator: "\n")
     }
 
-    @ViewBuilder
-    private func t3Rows(_ proposals: [T3TaskProposal], listKey: String, indented: Bool) -> some View {
-        let isExpanded = expandedT3Lists.contains(listKey)
-        let visible = isExpanded ? proposals : Array(proposals.prefix(Self.collapsedT3Count))
-        ForEach(visible) { proposal in
-            AgentHomeT3TaskRow(proposal: proposal, indented: indented) {
-                t3Model.open(proposal, tabManager: tabManager)
-            }
-        }
-        if proposals.count > Self.collapsedT3Count {
-            AgentHomeT3MoreRow(
-                hiddenCount: proposals.count - Self.collapsedT3Count,
-                isExpanded: isExpanded,
-                indented: indented
-            ) {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    if isExpanded { expandedT3Lists.remove(listKey) } else { expandedT3Lists.insert(listKey) }
-                }
-            }
-        }
-    }
-
     private func taskRow(_ task: AgentHomeTask, indented: Bool, shortcut: Int?) -> some View {
         AgentHomeTaskRow(
             task: task,
@@ -152,13 +204,23 @@ struct AgentHomeSidebarView: View {
         }
     }
 
-    /// Selects the next task in a view after the selected one, wrapping around.
-    private func jump(to filter: AgentHomeFilter, in snapshot: AgentHomeSnapshot) {
-        let matches = snapshot.tasks(matching: filter)
-        guard !matches.isEmpty else { return }
-        let currentIndex = matches.firstIndex { $0.id == tabManager.selectedTabId }
-        let next = currentIndex.map { matches[(matches.index(after: $0)) % matches.count] } ?? matches[0]
-        tabManager.focusTab(next.id)
+    /// Opens the next task in a view after the current one, wrapping around.
+    /// cmux tasks come first, then T3 tasks.
+    private func jump(to filter: AgentHomeFilter, in snapshot: AgentHomeSnapshot, layout: T3Layout) {
+        struct Stop { let key: String; let open: () -> Void }
+        var stops = snapshot.tasks(matching: filter).map { task in
+            Stop(key: task.id.uuidString) { tabManager.focusTab(task.id) }
+        }
+        let wanted: T3ThreadStatus? = filter == .needsYou ? .needsYou : filter == .running ? .running : nil
+        if let wanted {
+            stops += layout.allTasks.filter { $0.status == wanted }.map { task in
+                Stop(key: "t3:\(task.id)") { t3Model.open(task, tabManager: tabManager) }
+            }
+        }
+        guard !stops.isEmpty else { return }
+        let currentKey = layout.selectedTask.map { "t3:\($0.id)" } ?? tabManager.selectedTabId?.uuidString
+        let index = stops.firstIndex { $0.key == currentKey }.map { ($0 + 1) % stops.count } ?? 0
+        stops[index].open()
     }
 }
 

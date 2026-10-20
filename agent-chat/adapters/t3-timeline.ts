@@ -87,7 +87,7 @@ export class T3Timeline {
 
   /** Emits what changed since the last projection. */
   step(projection: T3Projection): T3Step {
-    const runs = [...projection.runs].sort((a, b) => a.ordinal - b.ordinal);
+    const runs = [...projection.runs].sort((a, b) => a.ordinal - b.ordinal).concat(foreignRuns(projection));
     const reset = this.needsReset(projection);
     if (reset) this.clear();
 
@@ -184,6 +184,29 @@ export class T3Timeline {
     this.items.clear();
     this.notified.clear();
   }
+}
+
+/** Sub-threads have no runs of their own: their items carry the parent
+ * thread's run ids. Group those into stand-in runs, in item order, that
+ * count as finished once every item has. */
+function foreignRuns(projection: T3Projection): T3Run[] {
+  const known = new Set(projection.runs.map((r) => r.id));
+  const groups = new Map<string, T3TurnItem[]>();
+  for (const item of [...projection.turnItems].sort((a, b) => a.ordinal - b.ordinal)) {
+    if (known.has(item.runId)) continue;
+    const list = groups.get(item.runId) ?? [];
+    list.push(item);
+    groups.set(item.runId, list);
+  }
+  const offset = projection.runs.reduce((max, r) => Math.max(max, r.ordinal), 0) + 1;
+  return [...groups.entries()].map(([id, items], index) => ({
+    id,
+    ordinal: offset + index,
+    status: items.every((i) => FINISHED_ITEM.has(i.status) || TEXT_ITEMS.has(i.type) && i.status !== "running")
+      ? "completed"
+      : "running",
+    userMessageId: null,
+  }));
 }
 
 function toolName(item: T3TurnItem): string {

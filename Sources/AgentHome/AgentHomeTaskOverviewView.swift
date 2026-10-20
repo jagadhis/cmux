@@ -21,6 +21,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
 
     private let feedModel = AgentHomeFeedModel.shared
     private let viewState = AgentHomeTaskViewState.shared
+    private let t3Model = AgentHomeT3Model.shared
 
     /// Whether Overview is showing for the selected workspace, so its terminals should be hidden.
     @MainActor
@@ -38,10 +39,21 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
 
     var body: some View {
         let task: AgentHomeTask? = isActive ? selectedTask() : nil
+        let t3Task: T3TaskNode? = isActive ? tabManager.selectedTabId.flatMap(t3Model.task(forWorkspace:)) : nil
         let mode = task.map(viewState.mode(for:)) ?? .sessions
 
         VStack(spacing: 0) {
-            if let task {
+            if let task, let t3Task {
+                let shownId = t3Model.shownThreadIds[task.id] ?? t3Task.thread.id
+                AgentHomeT3TaskHeader(
+                    task: t3Task,
+                    projectName: t3Model.project(of: t3Task)?.name ?? t3Task.thread.projectName,
+                    shownSubThread: t3Task.subThreads.first { $0.id == shownId },
+                    mode: mode,
+                    onModeChange: { viewState.setMode($0, for: task.id) },
+                    onOpenRoot: { t3Model.open(t3Task, tabManager: tabManager) }
+                )
+            } else if let task {
                 let group = workspaceGroup(of: task)
                 AgentHomeTaskHeader(
                     task: task,
@@ -54,9 +66,18 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             ZStack {
                 content
                 if let task, mode == .overview {
-                    AgentHomeTaskOverview(task: task, actions: actions(for: task))
+                    if let t3Task {
+                        AgentHomeT3Overview(task: t3Task, shownThreadId: t3Model.shownThreadIds[task.id]) { thread in
+                            viewState.setMode(.sessions, for: task.id)
+                            t3Model.open(t3Task, thread: thread, tabManager: tabManager)
+                        }
                         .id(task.id)
                         .transition(.opacity)
+                    } else {
+                        AgentHomeTaskOverview(task: task, actions: actions(for: task))
+                            .id(task.id)
+                            .transition(.opacity)
+                    }
                 }
             }
         }
@@ -65,6 +86,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
             guard isActive else { return }
             await feedModel.resolveTargets(for: feedModel.workstreamIDs)
         }
+        .onAppear { if isActive { t3Model.startIfNeeded() } }
     }
 
     private func selectedTask() -> AgentHomeTask? {
@@ -197,6 +219,161 @@ private struct AgentHomeTaskMetaRow: View {
             Image(systemName: symbol).font(.system(size: 11))
             content()
         }
+    }
+}
+
+// MARK: - T3 task header and overview
+
+/// The header for a T3 task: project › task (› sub-thread), Chat / Overview, and the sync badge.
+private struct AgentHomeT3TaskHeader: View {
+    let task: T3TaskNode
+    let projectName: String?
+    let shownSubThread: T3Thread?
+    let mode: AgentHomeTaskViewState.Mode
+    let onModeChange: (AgentHomeTaskViewState.Mode) -> Void
+    let onOpenRoot: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let projectName, !projectName.isEmpty {
+                Text(projectName).foregroundStyle(.tertiary)
+                Text(verbatim: "›").foregroundStyle(.tertiary)
+            }
+            if let shownSubThread {
+                Button(action: onOpenRoot) {
+                    Text(task.thread.title).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "agentHome.t3.backToMain", defaultValue: "Back to the main thread"))
+                Text(verbatim: "›").foregroundStyle(.tertiary)
+                Text(shownSubThread.title).fontWeight(.semibold).lineLimit(1)
+            } else {
+                Text(task.thread.title).fontWeight(.semibold).lineLimit(1)
+            }
+            if let branch = task.thread.branch {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 10.5))
+                    Text(branch).font(.system(size: 11.5, design: .monospaced)).lineLimit(1)
+                }
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 6)
+            }
+            Spacer(minLength: 12)
+            Picker("", selection: Binding(get: { mode }, set: onModeChange)) {
+                Text(String(localized: "agentHome.mode.chat", defaultValue: "Chat"))
+                    .tag(AgentHomeTaskViewState.Mode.sessions)
+                Text(task.subThreads.isEmpty
+                    ? String(localized: "agentHome.mode.overview", defaultValue: "Overview")
+                    : String(localized: "agentHome.mode.overviewCount", defaultValue: "Overview · \(task.subThreads.count + 1)"))
+                    .tag(AgentHomeTaskViewState.Mode.overview)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            HStack(spacing: 5) {
+                Circle().fill(AgentHomePalette.done).frame(width: 6, height: 6)
+                Text(String(localized: "agentHome.t3.synced", defaultValue: "Synced with T3"))
+            }
+            .font(.system(size: 11.5))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.primary.opacity(0.05)))
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 18)
+        .frame(height: 48)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Divider().opacity(0.6) }
+    }
+}
+
+/// Every session in a T3 task: the main thread and the sub-threads its agents created.
+private struct AgentHomeT3Overview: View {
+    let task: T3TaskNode
+    let shownThreadId: String?
+    let onOpen: (T3Thread) -> Void
+
+    private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+
+    var body: some View {
+        let sessions = [task.thread] + task.subThreads
+        let live = sessions.filter { T3ThreadStatus.of($0) != .idle }.count
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 7) {
+                    Text(String(localized: "agentHome.t3.sessionsInTask", defaultValue: "Sessions in this task"))
+                        .fontWeight(.semibold).foregroundStyle(.tertiary)
+                    Text(live > 0
+                        ? String(localized: "agentHome.t3.sessionsLive", defaultValue: "\(sessions.count) · \(live) live")
+                        : "\(sessions.count)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.system(size: 11.5))
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+                    ForEach(sessions, id: \.id) { thread in
+                        AgentHomeT3SessionCard(
+                            thread: thread,
+                            isMain: thread.id == task.thread.id,
+                            isShown: thread.id == (shownThreadId ?? task.thread.id)
+                        ) { onOpen(thread) }
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+        }
+        .scrollIndicators(.never)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+    }
+}
+
+private struct AgentHomeT3SessionCard: View {
+    let thread: T3Thread
+    let isMain: Bool
+    let isShown: Bool
+    let onOpen: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        let status = T3ThreadStatus.of(thread)
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    AgentHomeAgentAvatar(kind: kind, contextFraction: nil)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(thread.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        Text(subtitle).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    AgentHomeStatePill(state: status == .needsYou ? .needsYou : status == .running ? .running : .idle)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .agentHomeCard(
+                highlight: status == .needsYou ? AgentHomePalette.needsYou : (isShown ? AgentHomePalette.running : nil),
+                hovered: isHovered
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
+        .opacity(status == .idle && !isMain ? 0.75 : 1)
+    }
+
+    private var kind: AgentHomeAgentKind { thread.agentKind }
+
+    private var subtitle: String {
+        var parts = [isMain
+            ? String(localized: "agentHome.t3.mainThread", defaultValue: "Main thread")
+            : String(localized: "agentHome.t3.subThread", defaultValue: "Sub-thread")]
+        parts.append(kind.displayName)
+        if let updated = thread.updatedAt { parts.append(AgentHomeFormat.relative(updated)) }
+        return parts.joined(separator: " · ")
     }
 }
 

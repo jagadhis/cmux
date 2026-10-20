@@ -1,10 +1,11 @@
 import CmuxAgentHome
 import SwiftUI
 
-/// A T3 Code task that isn't open in cmux yet. Clicking opens it as a cmux task.
+/// A T3 Code task: a thread the user started. Shows how many sub-threads its
+/// agents created and its most urgent status.
 struct AgentHomeT3TaskRow: View {
-    let proposal: T3TaskProposal
-    let indented: Bool
+    let task: T3TaskNode
+    let isSelected: Bool
     let onOpen: () -> Void
 
     @State private var isHovered = false
@@ -12,47 +13,76 @@ struct AgentHomeT3TaskRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 8) {
-                Text(proposal.title)
+                Text(task.thread.title)
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
                 Spacer(minLength: 4)
-                if isHovered {
-                    Text(String(localized: "agentHome.t3.open", defaultValue: "Open"))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .transition(.opacity)
-                } else if proposal.threads.count > 1 {
-                    Text(proposal.threads.count, format: .number)
-                        .font(.system(size: 11).monospacedDigit())
+                if !task.subThreads.isEmpty {
+                    Text(task.subThreads.count, format: .number)
+                        .font(.system(size: 10.5).monospacedDigit())
                         .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .help(String(localized: "agentHome.t3.subThreads", defaultValue: "\(task.subThreads.count) sub-threads"))
                 }
-                AgentHomeT3Tag()
+                AgentHomeT3StatusDot(status: task.status)
             }
-            .padding(.leading, indented ? 24 : 0)
+            .padding(.leading, 24)
             .padding(.horizontal, 9)
             .frame(height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isHovered ? 0.05 : 0))
+                    .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
-        .help(helpText)
-    }
-
-    private var helpText: String {
-        let threads = proposal.threads.count == 1
-            ? String(localized: "agentHome.t3.oneThread", defaultValue: "1 T3 thread")
-            : String(localized: "agentHome.t3.threads", defaultValue: "\(proposal.threads.count) T3 threads")
-        return threads + " · " + proposal.branch
+        .accessibilityLabel(Text(task.thread.title))
     }
 }
 
-/// "N more from T3" under a project, toggling the rest of its T3 tasks.
+/// A sub-thread an agent created, nested under its task.
+struct AgentHomeT3SubThreadRow: View {
+    let thread: T3Thread
+    let isSelected: Bool
+    let onOpen: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 6) {
+                Text(verbatim: "↳")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Text(thread.title)
+                    .font(.system(size: 12.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                Spacer(minLength: 4)
+                AgentHomeT3StatusDot(status: T3ThreadStatus.of(thread), showsDone: true)
+            }
+            .padding(.leading, 34)
+            .padding(.horizontal, 9)
+            .frame(height: 25)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
+        .transition(.opacity.combined(with: .move(edge: .top)))
+        .accessibilityLabel(Text(thread.title))
+    }
+}
+
+/// "N more" under a project, toggling the rest of its T3 tasks.
 struct AgentHomeT3MoreRow: View {
     let hiddenCount: Int
     let isExpanded: Bool
@@ -66,7 +96,7 @@ struct AgentHomeT3MoreRow: View {
                     .font(.system(size: 9, weight: .semibold))
                 Text(isExpanded
                     ? String(localized: "agentHome.t3.showLess", defaultValue: "Show less")
-                    : String(localized: "agentHome.t3.more", defaultValue: "\(hiddenCount) more from T3"))
+                    : String(localized: "agentHome.t3.moreTasks", defaultValue: "\(hiddenCount) more"))
                 Spacer()
             }
             .font(.system(size: 11.5))
@@ -79,7 +109,7 @@ struct AgentHomeT3MoreRow: View {
     }
 }
 
-/// A T3 project that has no cmux project yet.
+/// A T3 project that has no cmux project. Clicking folds it.
 struct AgentHomeT3ProjectRow: View {
     let name: String
     let taskCount: Int
@@ -91,10 +121,8 @@ struct AgentHomeT3ProjectRow: View {
             Button(action: onToggleCollapsed) {
                 HStack(spacing: 9) {
                     AgentHomeProjectBadge(name: name, colorHex: nil)
-                        .opacity(0.55)
                     Text(name)
                         .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(taskCount, format: .number)
@@ -111,35 +139,55 @@ struct AgentHomeT3ProjectRow: View {
     }
 }
 
-/// Threads T3 couldn't place in a task: on a default branch or without a project.
-struct AgentHomeT3UnsortedRow: View {
-    let count: Int
+/// The status mark for a T3 task or sub-thread.
+struct AgentHomeT3StatusDot: View {
+    let status: T3ThreadStatus
+    var showsDone = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "tray")
-                .font(.system(size: 12))
-                .frame(width: 16)
-            Text(String(localized: "agentHome.t3.unsorted", defaultValue: "Unsorted T3 threads"))
-                .font(.system(size: 13))
-            Spacer(minLength: 4)
-            Text(count, format: .number)
-                .font(.system(size: 11.5).monospacedDigit())
+        switch status {
+        case .needsYou:
+            AgentHomeStatusDot(status: .needsYou)
+        case .running:
+            AgentHomeStatusDot(status: .running)
+        case .idle:
+            if showsDone {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14, height: 14)
+            } else {
+                Color.clear.frame(width: 14, height: 14)
+            }
         }
-        .foregroundStyle(.tertiary)
-        .padding(.horizontal, 9)
-        .frame(height: 28)
-        .help(String(localized: "agentHome.t3.unsortedHelp", defaultValue: "T3 threads on a default branch or without a project. Sorting them into tasks comes next."))
     }
 }
 
-private struct AgentHomeT3Tag: View {
+/// The "New chat" button at the top of the sidebar.
+struct AgentHomeNewChatButton: View {
+    let action: () -> Void
+
+    @State private var isHovered = false
+
     var body: some View {
-        Text(verbatim: "T3")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 3.5).fill(Color.primary.opacity(0.08)))
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(String(localized: "agentHome.newChat", defaultValue: "New chat"))
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(isHovered ? 0.1 : 0.07))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(String(localized: "agentHome.newChat.help", defaultValue: "Start a new T3 thread in a project"))
     }
 }

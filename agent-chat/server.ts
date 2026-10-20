@@ -799,6 +799,12 @@ const T3_SESSION_PREFIX = "t3-";
 
 // T3 thread ids can contain ":" (`thread:project:<id>:<id>`), which the
 // client's /s/<id> route doesn't accept, so session ids carry them base64url-encoded.
+// T3 validates ids itself; this only keeps paths and whitespace out.
+// Sub-thread ids nest their parent's id percent-encoded, so they're long and contain "%".
+function isT3ThreadId(threadId: string): boolean {
+  return /^[^\s/?#]{8,512}$/.test(threadId);
+}
+
 function t3SessionId(threadId: string): string {
   return `${T3_SESSION_PREFIX}${Buffer.from(threadId, "utf8").toString("base64url")}`;
 }
@@ -806,7 +812,7 @@ function t3SessionId(threadId: string): string {
 function t3ThreadIdFromSessionId(id: string): string | undefined {
   if (!id.startsWith(T3_SESSION_PREFIX)) return undefined;
   const threadId = Buffer.from(id.slice(T3_SESSION_PREFIX.length), "base64url").toString("utf8");
-  return /^[0-9A-Za-z:_-]{8,160}$/.test(threadId) ? threadId : undefined;
+  return isT3ThreadId(threadId) ? threadId : undefined;
 }
 
 function ensureT3Session(threadId: string): Session {
@@ -2261,10 +2267,11 @@ function startServer() {
         return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
       }
     }
-    const t3Match = url.pathname.match(/^\/t3\/([0-9A-Za-z:%_-]{8,200})\/?$/);
+    const t3Match = url.pathname.match(/^\/t3\/([^/?#]{8,1600})\/?$/);
     if (t3Match && req.method === "GET") {
-      const threadId = decodeURIComponent(t3Match[1]);
-      if (!/^[0-9A-Za-z:_-]{8,160}$/.test(threadId)) return new Response("Not a T3 thread id", { status: 404 });
+      let threadId = "";
+      try { threadId = decodeURIComponent(t3Match[1]); } catch { /* malformed escape */ }
+      if (!isT3ThreadId(threadId)) return new Response("Not a T3 thread id", { status: 404 });
       const sess = ensureT3Session(threadId);
       scheduleTranscriptDispose(sess);
       return new Response(null, { status: 302, headers: { location: `${prefixedPath(`/s/${sess.id}`)}${url.search}` } });

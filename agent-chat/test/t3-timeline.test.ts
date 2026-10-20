@@ -74,4 +74,22 @@ describe("T3Timeline", () => {
     const question = new T3Timeline().step(projection({ runtimeRequests: [{ id: "q2", kind: "user_input", status: "pending" }] }));
     expect(question.request?.isApproval).toBe(false);
   });
+
+  test("a sub-thread's items under the parent's run ids still show", () => {
+    const step = new T3Timeline().step(projection({
+      runs: [],
+      messages: [],
+      turnItems: [
+        { id: "a1", runId: "parent-run", ordinal: 2, status: "completed", type: "assistant_message", text: "Found it" },
+        { id: "t1", runId: "parent-run", ordinal: 1, status: "completed", type: "command_execution", input: "rg relay" },
+      ],
+    }));
+    expect(step.events).toEqual([
+      { kind: "tool-start", toolId: "t1", name: "Bash", detail: "rg relay" },
+      { kind: "tool-end", toolId: "t1", ok: true },
+      { kind: "delta", text: "Found it" },
+      { kind: "done" },
+    ]);
+    expect(step.status).toBe("idle");
+  });
 });
