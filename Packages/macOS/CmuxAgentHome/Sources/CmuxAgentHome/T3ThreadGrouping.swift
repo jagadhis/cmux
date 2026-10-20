@@ -2,36 +2,6 @@ import Foundation
 
 /// A T3 Code thread, as read from T3's local state database.
 public struct T3Thread: Identifiable, Hashable, Sendable {
-    /// A pull request linked to a thread.
-    public struct PullRequest: Hashable, Sendable {
-        /// The `owner/name` repository.
-        public var repository: String
-        /// The pull request number.
-        public var number: Int
-        /// The pull request URL.
-        public var url: URL?
-        /// The pull request title, when T3 has a snapshot.
-        public var title: String?
-        /// The state T3 last saw, such as `open` or `merged`.
-        public var state: String?
-
-        /// Creates a linked pull request.
-        ///
-        /// - Parameters:
-        ///   - repository: The `owner/name` repository.
-        ///   - number: The pull request number.
-        ///   - url: The pull request URL.
-        ///   - title: The pull request title.
-        ///   - state: The state T3 last saw.
-        public init(repository: String, number: Int, url: URL? = nil, title: String? = nil, state: String? = nil) {
-            self.repository = repository
-            self.number = number
-            self.url = url
-            self.title = title
-            self.state = state
-        }
-    }
-
     /// The T3 thread id.
     public var id: String
     /// The T3 project id.
@@ -60,6 +30,9 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     public var rootThreadId: String?
     /// How this thread relates to its parent, such as `subagent` or `fork`.
     public var relationshipToParent: String?
+    /// The thread whose agent started this one as a new top-level thread
+    /// (`t3_thread_launch` or `create_threads`): a handoff, not a sub-thread.
+    public var launchedByThreadId: String?
     /// The status of the thread's latest run, such as `running` or `completed`.
     public var latestRunStatus: String?
     /// Whether the thread has a request waiting on the user.
@@ -88,6 +61,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
     ///   - parentThreadId: The thread that created this one.
     ///   - rootThreadId: The top of this thread's lineage.
     ///   - relationshipToParent: How this thread relates to its parent.
+    ///   - launchedByThreadId: The thread whose agent started this one as a new thread.
     ///   - latestRunStatus: The status of the thread's latest run.
     ///   - hasPendingRequest: Whether a request is waiting on the user.
     ///   - latestRunCompletedAt: When the latest run finished.
@@ -108,6 +82,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         parentThreadId: String? = nil,
         rootThreadId: String? = nil,
         relationshipToParent: String? = nil,
+        launchedByThreadId: String? = nil,
         latestRunStatus: String? = nil,
         hasPendingRequest: Bool = false,
         latestRunCompletedAt: Date? = nil,
@@ -128,6 +103,7 @@ public struct T3Thread: Identifiable, Hashable, Sendable {
         self.parentThreadId = parentThreadId
         self.rootThreadId = rootThreadId
         self.relationshipToParent = relationshipToParent
+        self.launchedByThreadId = launchedByThreadId
         self.latestRunStatus = latestRunStatus
         self.hasPendingRequest = hasPendingRequest
         self.latestRunCompletedAt = latestRunCompletedAt

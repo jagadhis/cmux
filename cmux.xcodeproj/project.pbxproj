@@ -147,7 +147,9 @@
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
 		C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */ = {isa = PBXBuildFile; fileRef = 044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */; };
+		9D66BA44F9664C083C5EBCAB /* AgentHomeT3PullRequestActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 890A00E2DC78A9FAAC38C1C8 /* AgentHomeT3PullRequestActions.swift */; };
 		312509E4A967A9D2ACB0F98C /* AgentHomeT3SidebarRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */; };
+		69BFF3EF26DA12D3EB6825A1 /* AgentHomeT3TaskPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 530C3FA26E28B8B3637EA884 /* AgentHomeT3TaskPanels.swift */; };
 		AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */; };
 		5FB99DB76894FB3D13E174EF /* AgentHomeUsageModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDB04A311521EC9BBE714405 /* AgentHomeUsageModel.swift */; };
 		FDA9B76FC6E81C1B37182456 /* AgentHomeUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 668DE9E43158B4FD4FF707EE /* AgentHomeUsageView.swift */; };
@@ -4949,7 +4951,9 @@
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
 		044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3Model.swift; sourceTree = "<group>"; };
+		890A00E2DC78A9FAAC38C1C8 /* AgentHomeT3PullRequestActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3PullRequestActions.swift; sourceTree = "<group>"; };
 		78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3SidebarRows.swift; sourceTree = "<group>"; };
+		530C3FA26E28B8B3637EA884 /* AgentHomeT3TaskPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeT3TaskPanels.swift; sourceTree = "<group>"; };
 		D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeTaskOverviewView.swift; sourceTree = "<group>"; };
 		FDB04A311521EC9BBE714405 /* AgentHomeUsageModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeUsageModel.swift; sourceTree = "<group>"; };
 		668DE9E43158B4FD4FF707EE /* AgentHomeUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeUsageView.swift; sourceTree = "<group>"; };
@@ -12472,6 +12476,8 @@
 				D959A06AC8FC25C5CB1EC197 /* AgentHomeTaskOverviewView.swift */,
 				044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */,
 				78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */,
+				530C3FA26E28B8B3637EA884 /* AgentHomeT3TaskPanels.swift */,
+				890A00E2DC78A9FAAC38C1C8 /* AgentHomeT3PullRequestActions.swift */,
 				FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */,
 				CEC33AFF4EFDBD40A8359733 /* AgentHomePullRequestsModel.swift */,
 				20CB21D0A15B7BB24377C381 /* AgentHomePullRequestsView.swift */,
@@ -15031,7 +15037,9 @@
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
 				C1B2C3A870C29FB30A513EEC /* AgentHomeT3Model.swift in Sources */,
+				9D66BA44F9664C083C5EBCAB /* AgentHomeT3PullRequestActions.swift in Sources */,
 				312509E4A967A9D2ACB0F98C /* AgentHomeT3SidebarRows.swift in Sources */,
+				69BFF3EF26DA12D3EB6825A1 /* AgentHomeT3TaskPanels.swift in Sources */,
 				AA65794B131C60580539BC9A /* AgentHomeTaskOverviewView.swift in Sources */,
 				5FB99DB76894FB3D13E174EF /* AgentHomeUsageModel.swift in Sources */,
 				FDA9B76FC6E81C1B37182456 /* AgentHomeUsageView.swift in Sources */,

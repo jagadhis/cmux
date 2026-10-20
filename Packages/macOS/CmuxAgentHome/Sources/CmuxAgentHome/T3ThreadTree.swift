@@ -31,29 +31,46 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
     }
 }
 
-/// A task: a thread the user started, with every thread its agents created under it.
+/// A task: a thread the user started, with the threads its agents handed work
+/// off to and every sub-thread they created under it.
 public struct T3TaskNode: Identifiable, Hashable, Sendable {
-    /// The thread the user started.
+    /// The thread the user started: the top of the handoff chain.
     public var thread: T3Thread
-    /// Sub-threads anywhere below it, most recently updated first.
+    /// Threads an agent in this task started as new top-level threads
+    /// (`t3_thread_launch`, `create_threads`), oldest first, so the chain reads top down.
+    public var handoffs: [T3Thread]
+    /// Sub-threads anywhere below the main thread or its handoffs, most recently updated first.
     public var subThreads: [T3Thread]
 
     /// Creates a task.
     ///
     /// - Parameters:
     ///   - thread: The thread the user started.
+    ///   - handoffs: Threads handed off to, oldest first.
     ///   - subThreads: Sub-threads below it.
-    public init(thread: T3Thread, subThreads: [T3Thread] = []) {
+    public init(thread: T3Thread, handoffs: [T3Thread] = [], subThreads: [T3Thread] = []) {
         self.thread = thread
+        self.handoffs = handoffs
         self.subThreads = subThreads
     }
 
     /// The task id: the root thread's id.
     public var id: String { thread.id }
 
-    /// The most urgent status of the root thread and its sub-threads.
+    /// The main thread, then its handoffs, then sub-threads.
+    public var allThreads: [T3Thread] { [thread] + handoffs + subThreads }
+
+    /// The main thread and its handoffs: the threads the user verifies.
+    public var mainThreads: [T3Thread] { [thread] + handoffs }
+
+    /// The thread with `id`, if it's part of the task.
+    public func thread(withId id: String) -> T3Thread? {
+        allThreads.first { $0.id == id }
+    }
+
+    /// The most urgent status of every thread in the task.
     public var status: T3ThreadStatus {
-        ([thread] + subThreads).map(T3ThreadStatus.of).min() ?? .idle
+        allThreads.map(T3ThreadStatus.of).min() ?? .idle
     }
 
     /// Sub-threads that are running or waiting on the user.
@@ -63,12 +80,17 @@ public struct T3TaskNode: Identifiable, Hashable, Sendable {
 
     /// Whether the task finished since the user last looked at it.
     public var hasUnseenResult: Bool {
-        status == .done && thread.hasUnseenResult
+        status == .done && mainThreads.contains(where: \.hasUnseenResult)
     }
 
-    /// When the root thread or any sub-thread last changed.
+    /// Whether the main thread or its latest handoff stopped before finishing.
+    public var latestRunEndedEarly: Bool {
+        (handoffs.last ?? thread).latestRunEndedEarly
+    }
+
+    /// When any thread in the task last changed.
     public var lastActivity: Date? {
-        ([thread] + subThreads).compactMap(\.updatedAt).max()
+        allThreads.compactMap(\.updatedAt).max()
     }
 }
 
@@ -119,6 +141,12 @@ public enum T3ThreadTree {
     /// nearest present ancestor takes its place, and with none present the
     /// sub-thread becomes a task of its own.
     ///
+    /// A thread an agent launched (``T3Thread/launchedByThreadId``) is a
+    /// handoff: it joins the task of the thread that launched it, and so does
+    /// everything below it, so a chain of handoffs groups under the thread the
+    /// user started. A launcher that isn't among `threads` leaves the handoff a
+    /// task of its own.
+    ///
     /// - Parameters:
     ///   - threads: Active threads from T3.
     ///   - now: The current time, for the recent window.
@@ -131,25 +159,53 @@ public enum T3ThreadTree {
     ) -> [T3ProjectNode] {
         let byId = Dictionary(threads.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        func taskRoot(of thread: T3Thread) -> String {
-            if let root = thread.rootThreadId, root != thread.id, byId[root] != nil { return root }
+        // The top of a thread's own lineage (sub-threads and forks).
+        func lineageRoot(of thread: T3Thread) -> T3Thread {
+            if let root = thread.rootThreadId, root != thread.id, let present = byId[root] { return present }
             var current = thread
             var seen: Set<String> = [thread.id]
             while let parent = current.parentThreadId, let next = byId[parent], seen.insert(parent).inserted {
                 current = next
             }
+            return current
+        }
+
+        // The task a thread belongs to: its lineage root, then up the handoff chain.
+        func taskRoot(of thread: T3Thread) -> String {
+            var current = lineageRoot(of: thread)
+            var path = [current.id]
+            while let launcher = current.launchedByThreadId, let next = byId[launcher] {
+                let root = lineageRoot(of: next)
+                if let repeatIndex = path.firstIndex(of: root.id) {
+                    // A cycle (bad data): every thread on it picks the same root.
+                    return path[repeatIndex...].min() ?? root.id
+                }
+                path.append(root.id)
+                current = root
+            }
             return current.id
         }
 
-        var subThreads: [String: [T3Thread]] = [:]
+        var members: [String: (handoffs: [T3Thread], subThreads: [T3Thread])] = [:]
         var roots: [T3Thread] = []
         for thread in threads {
             let root = taskRoot(of: thread)
-            if root == thread.id { roots.append(thread) } else { subThreads[root, default: []].append(thread) }
+            if root == thread.id {
+                roots.append(thread)
+            } else if lineageRoot(of: thread).id == thread.id {
+                members[root, default: ([], [])].handoffs.append(thread)
+            } else {
+                members[root, default: ([], [])].subThreads.append(thread)
+            }
         }
 
         let tasks = roots.map { root in
-            T3TaskNode(thread: root, subThreads: (subThreads[root.id] ?? []).sorted(by: updatedFirst))
+            let group = members[root.id] ?? ([], [])
+            return T3TaskNode(
+                thread: root,
+                handoffs: group.handoffs.sorted(by: createdFirst),
+                subThreads: group.subThreads.sorted(by: updatedFirst)
+            )
         }
         let cutoff = now.addingTimeInterval(-recentWindow)
         var projects: [String: T3ProjectNode] = [:]
@@ -176,10 +232,36 @@ public enum T3ThreadTree {
             .sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
     }
 
+    /// The launchers of handed-off threads that aren't among `threads`, up the
+    /// chain as far as `index` knows, so a settled thread that handed off still
+    /// heads its task. Read them with ``T3CodeStateReader/activeThreads(openTaskIds:includingThreadIds:)``.
+    ///
+    /// - Parameters:
+    ///   - threads: Threads as read, with launchers applied.
+    ///   - index: Known launches.
+    /// - Returns: Thread ids to read as well.
+    public static func missingLaunchers(of threads: [T3Thread], index: T3LaunchIndex) -> Set<String> {
+        let present = Set(threads.map(\.id))
+        var missing: Set<String> = []
+        for thread in threads {
+            var launcher = thread.launchedByThreadId
+            var seen: Set<String> = [thread.id]
+            while let id = launcher, seen.insert(id).inserted {
+                if !present.contains(id) { missing.insert(id) }
+                launcher = index.launcher(of: id)
+            }
+        }
+        return missing
+    }
+
     /// Live tasks first (needs you, then running), then most recent activity.
     static func taskOrder(_ lhs: T3TaskNode, _ rhs: T3TaskNode) -> Bool {
         if lhs.status != rhs.status { return lhs.status < rhs.status }
         return (lhs.lastActivity ?? .distantPast) > (rhs.lastActivity ?? .distantPast)
+    }
+
+    private static func createdFirst(_ lhs: T3Thread, _ rhs: T3Thread) -> Bool {
+        (lhs.createdAt ?? lhs.updatedAt ?? .distantPast) < (rhs.createdAt ?? rhs.updatedAt ?? .distantPast)
     }
 
     private static func updatedFirst(_ lhs: T3Thread, _ rhs: T3Thread) -> Bool {

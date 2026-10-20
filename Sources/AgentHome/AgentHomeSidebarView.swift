@@ -193,6 +193,15 @@ struct AgentHomeSidebarView: View {
                 onOpen: { t3Model.open(task, tabManager: tabManager) },
                 onVerify: { t3Model.verify(task, tabManager: tabManager) }
             )
+            // Handoffs carry the task on, so unverified ones stay in view; sub-threads only while live.
+            let handoffs = isSelectedTask
+                ? task.handoffs
+                : task.handoffs.filter { T3ThreadStatus.of($0) < .idle }
+            ForEach(handoffs, id: \.id) { handoff in
+                AgentHomeT3SubThreadRow(thread: handoff, isHandoff: true, isSelected: shown == handoff.id) {
+                    t3Model.open(task, thread: handoff, tabManager: tabManager)
+                }
+            }
             let subThreads = isSelectedTask
                 ? Array(task.subThreads.prefix(Self.collapsedSubThreadCount))
                 : task.subThreads.filter { T3ThreadStatus.of($0) < .done }
@@ -217,7 +226,7 @@ struct AgentHomeSidebarView: View {
     private func unseenShownThreadId(layout: T3Layout) -> String? {
         guard let task = layout.selectedTask else { return nil }
         let shownId = layout.shownThreadId ?? task.thread.id
-        let shown = ([task.thread] + task.subThreads).first { $0.id == shownId }
+        let shown = task.thread(withId: shownId)
         return shown?.hasUnseenResult == true ? shownId : nil
     }
 

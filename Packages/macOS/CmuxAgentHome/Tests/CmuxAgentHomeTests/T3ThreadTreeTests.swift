@@ -7,12 +7,15 @@ import Testing
 
     func thread(
         _ id: String, project: String? = "oorva-app", parent: String? = nil, root: String? = nil,
-        run: String? = "completed", pending: Bool = false, daysAgo: Double = 0, settled: Bool = false
+        run: String? = "completed", pending: Bool = false, daysAgo: Double = 0, settled: Bool = false,
+        launchedBy: String? = nil, createdDaysAgo: Double? = nil
     ) -> T3Thread {
         T3Thread(
             id: id, projectId: project ?? "none", projectName: project, title: id, provider: "claudeAgent",
+            createdAt: now.addingTimeInterval(-(createdDaysAgo ?? daysAgo) * 86_400),
             updatedAt: now.addingTimeInterval(-daysAgo * 86_400),
             parentThreadId: parent, rootThreadId: root ?? parent, relationshipToParent: parent == nil ? nil : "subagent",
+            launchedByThreadId: launchedBy,
             latestRunStatus: run, hasPendingRequest: pending, isSettled: settled
         )
     }
@@ -69,6 +72,48 @@ import Testing
         #expect(tasks[0].subThreads.map(\.id) == ["child", "grandchild"])
         #expect(tasks[0].status == .running)
         #expect(tasks[0].liveSubThreadCount == 1)
+    }
+
+    @Test func handoffsGroupUnderTheThreadThatStartedTheChain() {
+        let projects = T3ThreadTree.build([
+            thread("main", daysAgo: 2, settled: true),
+            thread("main-helper", parent: "main", daysAgo: 2),
+            thread("second", run: "completed", daysAgo: 1, launchedBy: "main", createdDaysAgo: 1.5),
+            thread("third", run: "running", daysAgo: 0, launchedBy: "second", createdDaysAgo: 1),
+            // A thread a sub-thread launched still belongs to the chain.
+            thread("from-helper", daysAgo: 0.2, launchedBy: "main-helper", createdDaysAgo: 1.2),
+            thread("third-helper", parent: "third", run: "running"),
+            thread("launcher-gone", daysAgo: 3, launchedBy: "archived"),
+        ], now: now)
+
+        let tasks = projects[0].recentTasks
+        #expect(tasks.map(\.id) == ["main", "launcher-gone"])
+        let main = tasks[0]
+        // Handoffs read top down, oldest first; sub-threads of any of them nest too.
+        #expect(main.handoffs.map(\.id) == ["second", "from-helper", "third"])
+        #expect(Set(main.subThreads.map(\.id)) == ["main-helper", "third-helper"])
+        #expect(main.mainThreads.map(\.id) == ["main", "second", "from-helper", "third"])
+        // The task takes its most urgent thread's status, though the main thread is settled.
+        #expect(main.status == .running)
+        #expect(main.thread(withId: "third")?.id == "third")
+    }
+
+    @Test func handoffCyclesDoNotLoop() {
+        let projects = T3ThreadTree.build([
+            thread("a", launchedBy: "b"),
+            thread("b", launchedBy: "a"),
+        ], now: now)
+        let tasks = projects[0].recentTasks
+        #expect(tasks.count == 1)
+        #expect(tasks[0].handoffs.count == 1)
+    }
+
+    @Test func missingLaunchersAreReadUpTheChain() {
+        let index = T3LaunchIndex(launchers: ["third": "second", "second": "main"])
+        let threads = index.applied(to: [thread("third", run: "running")])
+        #expect(threads[0].launchedByThreadId == "second")
+        #expect(T3ThreadTree.missingLaunchers(of: threads, index: index) == ["second", "main"])
+        #expect(T3ThreadTree.missingLaunchers(of: [thread("solo")], index: index).isEmpty)
     }
 
     @Test func missingRootFallsBackToNearestAncestorOrItself() {

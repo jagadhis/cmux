@@ -8,6 +8,7 @@ import type { HighlighterCore, LanguageRegistration } from "shiki/core";
 import { CopyIcon } from "./components/icons";
 import { useRepositorySlug } from "./context";
 import { remarkGitHubReferences } from "./githubReferences";
+import { chatUrlTransform, chatWorkspaceId, isGitHubLink, threadChatHref, threadLinkId } from "./threadLinks";
 
 const langs = ["ts", "tsx", "js", "json", "bash", "shell", "python", "swift", "rust", "go", "html", "css", "markdown", "yaml", "diff"];
 const themeName = "agent-css-variables";
@@ -192,13 +193,66 @@ const schema = {
     ...defaultSchema.attributes,
     code: [...(defaultSchema.attributes?.code ?? []), "className"],
   },
+  // T3 agents link threads as t3-thread://v1/<id>; cmux opens them.
+  protocols: {
+    ...defaultSchema.protocols,
+    href: [...(defaultSchema.protocols?.href ?? []), "t3-thread"],
+  },
 };
+
+const urlTransform = (url: string) => chatUrlTransform(url, defaultUrlTransform);
+
+function chatBase(): string {
+  const base = typeof window === "undefined" ? "" : window.__AGENT_CHAT_BASE__ ?? "";
+  return base && base !== "/" ? base.replace(/\/$/, "") : "";
+}
+
+/// Loads the linked thread's chat; cmux opens it in its own task when it belongs to another.
+function followThreadLink(threadId: string) {
+  location.assign(threadChatHref(threadId, chatBase(), location.search));
+}
+
+/// Opens a GitHub link in a browser beside the chat, in the same cmux task.
+/// Returns false when the chat isn't a cmux task, so the link opens as usual.
+function openBesideChat(href: string): boolean {
+  const workspaceId = typeof location === "undefined" ? null : chatWorkspaceId(location.search);
+  if (!workspaceId || !isGitHubLink(href)) return false;
+  void fetch(`${chatBase()}/api/open-link`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: href, workspaceId }),
+  })
+    .then((response) => { if (!response.ok) throw new Error(String(response.status)); })
+    .catch(() => { window.open(href, "_blank", "noopener"); });
+  return true;
+}
 
 function markdownComponents(streaming: boolean): Components {
   return {
   a({ href, children }) {
+    const threadId = threadLinkId(href);
+    if (threadId) {
+      return (
+        <a href={href} className="thread-link" title="Open thread" onClick={(event) => { event.preventDefault(); followThreadLink(threadId); }}>
+          {children}
+        </a>
+      );
+    }
     const safeHref = defaultUrlTransform(href ?? "");
-    return <a href={safeHref} target="_blank" rel="noopener noreferrer">{children}</a>;
+    return (
+      <a
+        href={safeHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => {
+          // A modified click keeps the browser's own behaviour.
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+          if (openBesideChat(safeHref)) event.preventDefault();
+        }}
+      >
+        {children}
+      </a>
+    );
   },
   pre({ children }) {
     const child = Array.isArray(children) ? children[0] : children;
@@ -236,6 +290,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({ text, streaming = false
     <ReactMarkdown
       remarkPlugins={plugins}
       rehypePlugins={[[rehypeSanitize, schema]]}
+      urlTransform={urlTransform}
       components={components}
     >
       {text}
