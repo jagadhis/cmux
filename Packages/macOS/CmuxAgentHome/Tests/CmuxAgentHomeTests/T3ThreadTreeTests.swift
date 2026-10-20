@@ -74,6 +74,62 @@ import Testing
         #expect(tasks[0].liveSubThreadCount == 1)
     }
 
+    @Test func subAgentsRunInsideTheirParentsRun() {
+        var native = thread("review", parent: "main", run: nil)
+        native.subagent = T3Thread.Subagent(origin: "provider_native", status: "running", progress: "Reading the diff")
+        #expect(T3ThreadStatus.of(native) == .running)
+        native.subagent?.status = "completed"
+        #expect(T3ThreadStatus.of(native) == .idle)
+        #expect(!native.latestRunEndedEarly)
+        native.subagent?.status = "interrupted"
+        #expect(native.latestRunEndedEarly)
+        // A delegated task has runs of its own, and they win.
+        var delegated = thread("delegated", parent: "main", run: "completed")
+        delegated.subagent = T3Thread.Subagent(origin: "app_owned", status: "running")
+        #expect(T3ThreadStatus.of(delegated) == .done)
+    }
+
+    @Test func subThreadsListUnderTheThreadThatStartedThem() {
+        let task = T3ThreadTree.build([
+            thread("main", run: "running", daysAgo: 0),
+            thread("old-helper", parent: "main", run: nil, daysAgo: 3),
+            thread("live-helper", parent: "main", run: "running", daysAgo: 1),
+            thread("nested", parent: "live-helper", root: "main", run: nil, daysAgo: 0.5),
+            thread("handoff", run: "completed", daysAgo: 0.2, launchedBy: "main", createdDaysAgo: 0.4),
+            thread("handoff-helper", parent: "handoff", run: nil, daysAgo: 0.1),
+            // Its parent is gone, so it lists under the lineage root.
+            thread("stray", parent: "gone", root: "main", run: nil, daysAgo: 2),
+        ], now: now)[0].recentTasks[0]
+
+        let outline = task.subThreadOutline()
+        func rows(_ id: String) -> [String] { outline.rows(under: id).map { "\($0.depth):\($0.id)" } }
+        // Live first, then newest; each sub-thread is followed by its own.
+        #expect(rows("main") == ["1:live-helper", "2:nested", "1:stray", "1:old-helper"])
+        #expect(rows("handoff") == ["1:handoff-helper"])
+        #expect(outline.rows(under: "nested").isEmpty)
+        #expect(outline.rows(under: "main").first { $0.id == "nested" }?.parent?.id == "live-helper")
+        #expect(outline.hiddenCount == 0)
+    }
+
+    @Test func collapsedOutlinesKeepLiveSubThreadsAndTheirParents() {
+        let task = T3ThreadTree.build([
+            thread("main", run: "completed", daysAgo: 0),
+            thread("done-parent", parent: "main", run: nil, daysAgo: 2),
+            thread("live-child", parent: "done-parent", root: "main", run: "running", daysAgo: 1),
+            thread("done-a", parent: "main", run: nil, daysAgo: 0.5),
+            thread("done-b", parent: "main", run: nil, daysAgo: 0.6),
+        ], now: now)[0].recentTasks[0]
+
+        // Only live sub-threads, with the parents that link them to the main thread.
+        let live = task.subThreadOutline(finishedLimit: 0)
+        #expect(live.rows(under: "main").map(\.id) == ["done-parent", "live-child"])
+        #expect(live.hiddenCount == 2)
+        // Finished ones fill up to the limit after those.
+        let some = task.subThreadOutline(finishedLimit: 1)
+        #expect(some.rows(under: "main").map(\.id) == ["done-parent", "live-child", "done-a"])
+        #expect(some.hiddenCount == 1)
+    }
+
     @Test func handoffsGroupUnderTheThreadThatStartedTheChain() {
         let projects = T3ThreadTree.build([
             thread("main", daysAgo: 2, settled: true),

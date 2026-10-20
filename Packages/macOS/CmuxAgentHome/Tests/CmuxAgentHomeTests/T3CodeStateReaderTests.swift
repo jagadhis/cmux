@@ -275,6 +275,39 @@ import Testing
         #expect(files["t9"]?.map(\.path) == ["/Users/jags/projects/oorva-app/notes.md"])
     }
 
+    @Test func readsSubAgentStatusForThreadsWithoutRunsOfTheirOwn() throws {
+        let url = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        let sql = """
+            CREATE TABLE orchestration_v2_projection_subagents (
+              subagent_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, child_thread_id TEXT, origin TEXT NOT NULL,
+              status TEXT NOT NULL, started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL);
+            INSERT INTO orchestration_v2_projection_subagents VALUES
+              ('s1', 't5', 't6', 'provider_native', 'running', '2026-10-19T08:00:00Z', NULL, '2026-10-19T08:05:00Z',
+               '{"progress":"Running Verify the seat floor"}'),
+              ('s2', 't1', 't2', 'provider_native', 'running', '2026-10-19T07:00:00Z', NULL, '2026-10-19T07:00:00Z', '{}'),
+              ('s3', 't1', 't2', 'provider_native', 'failed', '2026-10-19T07:10:00Z', '2026-10-19T07:20:00Z', '2026-10-19T07:20:00Z', '{}');
+            """
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        let threads = try T3CodeStateReader(databaseURL: url).activeThreads()
+
+        // A running sub-agent is read though its task is settled, and reads as running.
+        let running = try #require(threads.first { $0.id == "t6" })
+        #expect(running.subagent?.status == "running")
+        #expect(running.subagent?.progress == "Running Verify the seat floor")
+        #expect(running.subagent?.isNative == true)
+        #expect(T3ThreadStatus.of(running) == .running)
+        // The latest record wins when a sub-agent was started again.
+        let failed = try #require(threads.first { $0.id == "t2" })
+        #expect(failed.subagent?.status == "failed")
+        #expect(failed.latestRunEndedEarly)
+        #expect(T3ThreadStatus.of(failed) == .idle)
+    }
+
     @Test func missingDatabaseThrows() {
         let reader = T3CodeStateReader(databaseURL: URL(fileURLWithPath: "/nonexistent/statev2.sqlite"))
         #expect(throws: T3CodeStateReader.ReadError.self) { try reader.activeThreads() }
