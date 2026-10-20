@@ -12968,7 +12968,17 @@ struct VerticalTabsSidebar: View, Equatable {
         let inMemoryTemplatePreview = CmuxExtensionSidebarSelection.inMemoryTemplatePreviewSource(
             for: effectiveExtensionSidebarProviderId
         )
-        if effectiveExtensionSidebarProviderId == CmuxExtensionSidebarSelection.conversationSidebarProviderId {
+        if effectiveExtensionSidebarProviderId == CmuxExtensionSidebarSelection.agentHomeProviderId {
+            AgentHomeSidebarView(tabManager: tabManager)
+                .padding(.top, SidebarWorkspaceScrollInsets.workspaceList.top)
+                .padding(.bottom, SidebarWorkspaceScrollInsets.workspaceList.bottom)
+                .mask(
+                    SidebarWorkspaceScrollEdgeFadeMask(
+                        topHeight: sidebarTopScrimHeight,
+                        bottomHeight: sidebarBottomScrimHeight
+                    )
+                )
+        } else if effectiveExtensionSidebarProviderId == CmuxExtensionSidebarSelection.conversationSidebarProviderId {
             ConversationSidebarView(
                 store: sessionIndexStore,
                 tabManager: tabManager

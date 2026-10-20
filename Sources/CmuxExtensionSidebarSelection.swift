@@ -19,6 +19,8 @@ enum CmuxExtensionSidebarSelection {
     static let defaultProviderId = CmuxSidebarProviderDescriptor.defaultWorkspacesID
     static let conversationSidebarProviderId = "cmux.sidebar.conversations"
     static let hostedExtensionsProviderId = "cmux.sidebar.extensions"
+    /// The fork's Agent Home sidebar: projects, tasks and live agents.
+    static let agentHomeProviderId = "cmux.sidebar.agentHome"
 
     /// Synchronous read of the experimental Extensions flag for the on-demand
     /// AppKit/static paths (the toggle menu, the command-palette builder, the
@@ -153,6 +155,23 @@ enum CmuxExtensionSidebarSelection {
         return name == (name as NSString).lastPathComponent
     }
 
+    /// Picker descriptor for the built-in Agent Home sidebar.
+    static var agentHomeDescriptor: CmuxSidebarProviderDescriptor {
+        CmuxSidebarProviderDescriptor(
+            id: agentHomeProviderId,
+            title: CmuxSidebarProviderLocalizedText(
+                key: "sidebar.provider.agentHome.title",
+                defaultValue: "Agent Home"
+            ),
+            subtitle: CmuxSidebarProviderLocalizedText(
+                key: "sidebar.provider.agentHome.subtitle",
+                defaultValue: "Projects, tasks and live agents"
+            ),
+            systemImageName: "sparkles.rectangle.stack",
+            isHostProvided: false
+        )
+    }
+
     /// Picker descriptor for the built-in Conversations sidebar.
     static var conversationSidebarDescriptor: CmuxSidebarProviderDescriptor {
         CmuxSidebarProviderDescriptor(
@@ -176,7 +195,7 @@ enum CmuxExtensionSidebarSelection {
     /// independently of the experimental Extensions feature, so they stay in
     /// the switcher menu regardless of the beta flag.
     static var builtInDescriptors: [CmuxSidebarProviderDescriptor] {
-        [.defaultWorkspaces] + providers.map { $0.descriptor }
+        [.defaultWorkspaces, agentHomeDescriptor] + providers.map { $0.descriptor }
     }
 
     /// Descriptors offered in the switcher menu and command palette. The hosted
@@ -197,7 +216,7 @@ enum CmuxExtensionSidebarSelection {
     /// to register command-palette handlers so a runtime flag flip always has a
     /// handler to invoke; what is *shown* uses ``descriptors``.
     static var allDescriptors: [CmuxSidebarProviderDescriptor] {
-        [.defaultWorkspaces, conversationSidebarDescriptor]
+        [.defaultWorkspaces, agentHomeDescriptor, conversationSidebarDescriptor]
             + providers.map { $0.descriptor }
             + [hostedExtensionsDescriptor]
             + customSidebarDescriptors
@@ -243,6 +262,7 @@ enum CmuxExtensionSidebarSelection {
     static func resolvesToDefaultSidebar(effectiveProviderId id: String) -> Bool {
         if id == defaultProviderId { return true }
         if id == conversationSidebarProviderId { return false }
+        if id == agentHomeProviderId { return false }
         if id == hostedExtensionsProviderId { return false }
         if id.hasPrefix(customSidebarProviderPrefix) {
             // A custom selection survives only while its backing file exists;
