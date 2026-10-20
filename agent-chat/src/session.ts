@@ -164,8 +164,12 @@ export interface SessionSummary {
   parentSessionId?: string;
   parentConversationId?: string;
   startRequestId?: string;
-  /** "transcript": a chat view of an agent running in a cmux terminal. */
+  /** "transcript": a chat view of an agent running in a cmux terminal, or of a T3 Code thread. */
   mode?: "transcript";
+  /** "t3": the agent runs in T3 Code; sends, stops and approvals are T3 commands. */
+  source?: "t3";
+  /** A T3 request waiting on the user, shown as an approval card. */
+  request?: T3Request | null;
   /** What that agent is waiting on in the terminal (permission, question). */
   attention?: string | null;
   /** cmux agent messages waiting for that agent. */
@@ -173,6 +177,9 @@ export interface SessionSummary {
 }
 
 export interface QueuedAgentMessage { id: string; from: string; body: string }
+
+export interface T3Request { id: string; kind: string; title: string; detail?: string; isApproval: boolean }
+export type T3Decision = "accept" | "acceptForSession" | "decline";
 
 /** Whether a terminal-backed chat must be answered in the terminal itself. */
 export function transcriptComposerLocked(
@@ -284,6 +291,7 @@ export interface SessionState {
   stop(): void;
   /** Focuses the terminal pane behind a terminal chat view. */
   focusTerminal(): void;
+  respondRequest(requestId: string, decision: T3Decision): void;
   setOption(id: string, value: OptionValue): void;
   fork(): void;
   handoff(): void;
@@ -319,7 +327,7 @@ function appPath(path: string): string {
 
 const routedSessionId = (routePath().match(/^\/s\/([\w-]+)/) || [])[1] || null;
 /** Transcript views use `t-<agent session id>`; known before history arrives. */
-export const routedToTranscript = routedSessionId?.startsWith("t-") ?? false;
+export const routedToTranscript = (routedSessionId?.startsWith("t-") || routedSessionId?.startsWith("t3-")) ?? false;
 export const composerDraftKey = "agentui.draft";
 const PENDING_START_TIMEOUT_MS = 30_000;
 const FILE_DIFF_TIMEOUT_MS = 30_000;
@@ -669,6 +677,11 @@ export function useSession(): SessionState {
               setSession((s) => (s ? { ...s, queuedMessages: Array.isArray(msg.messages) ? msg.messages : [] } : s));
             }
             break;
+          case "session-request":
+            if (msg.sessionId === sessionIdRef.current) {
+              setSession((s) => (s ? { ...s, request: msg.request && typeof msg.request === "object" ? msg.request : null } : s));
+            }
+            break;
           case "session-attention":
             if (msg.sessionId === sessionIdRef.current) {
               setSession((s) => (s ? { ...s, attention: typeof msg.attention === "string" ? msg.attention : null } : s));
@@ -898,6 +911,11 @@ export function useSession(): SessionState {
     }
     return false;
   }, [sendRaw, start]);
+  const respondRequest = useCallback((requestId: string, decision: T3Decision) => {
+    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, decision });
+    // Hide the card right away; the next T3 update confirms it.
+    setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
+  }, []);
   const focusTerminal = useCallback(() => {
     if (sessionIdRef.current) sendRaw({ op: "focus-terminal", sessionId: sessionIdRef.current });
   }, [sendRaw]);
@@ -1024,6 +1042,7 @@ export function useSession(): SessionState {
     reply,
     stop,
     focusTerminal,
+    respondRequest,
     setOption,
     fork,
     handoff,

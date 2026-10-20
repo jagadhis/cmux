@@ -18,6 +18,8 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
+import { attachT3Thread, respondT3Request, t3Adapter } from "./adapters/t3";
+import type { T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
 import { discoverHarnesses } from "./harnesses";
@@ -275,6 +277,7 @@ function sessionSummary(s: Session) {
     startRequestId: s.startRequestId,
     capabilities: s.transcript ? s.adapter.capabilities : capabilitiesFor(s.provider),
     ...(s.transcript ? { mode: "transcript" as const, attention: s.transcript.attention ?? null, queuedMessages: s.transcript.queuedMessages ?? [] } : {}),
+    ...(s.internal.t3 ? { source: "t3" as const, request: (s.internal.t3Request as T3PendingRequest | null) ?? null } : {}),
   };
 }
 
@@ -787,6 +790,57 @@ function resolveTranscriptSessionById(id: string): Session | undefined {
   if (!id.startsWith(TRANSCRIPT_SESSION_PREFIX)) return undefined;
   const source = resolveSessionTranscript(id.slice(TRANSCRIPT_SESSION_PREFIX.length));
   return source ? ensureTranscriptSession(source) : undefined;
+}
+
+// T3 Code threads (cmux Agent Home): T3 runs the agent and this view is a
+// T3 client. They reuse the transcript view's chrome (no pickers, optimistic
+// echo, idle disposal); `internal.t3` marks them and holds the pending request.
+const T3_SESSION_PREFIX = "t3-";
+
+function ensureT3Session(threadId: string): Session {
+  const id = `${T3_SESSION_PREFIX}${threadId}`;
+  const existing = sessions.get(id);
+  if (existing) return existing;
+  const sess = createSession("claude", DEFAULT_CWD, false, "T3 thread", {}, {}, { id, adapter: t3Adapter });
+  sess.transcript = { agent: "claude", path: `t3:${threadId}` };
+  sess.internal.t3Request = null;
+  let lastError = "";
+  attachT3Thread(sess, threadId, {
+    onTitle(title) {
+      if (!title || sess.title === title) return;
+      sess.title = title;
+      broadcastSessions();
+      const payload = JSON.stringify({ kind: "session-title", sessionId: sess.id, title });
+      for (const ws of sess.sockets) ws.send(payload);
+    },
+    onCwd(cwd) {
+      if (sess.cwd === cwd) return;
+      sess.cwd = cwd;
+      broadcastSessions();
+    },
+    onRequest(request: T3PendingRequest | null) {
+      sess.internal.t3Request = request;
+      // Questions are answered in T3; approvals get buttons right in the chat.
+      const attention = request && !request.isApproval ? `${request.title}. Answer it in T3.` : null;
+      if (sess.transcript) sess.transcript.attention = attention;
+      for (const ws of sess.sockets) {
+        ws.send(JSON.stringify({ kind: "session-attention", sessionId: sess.id, attention }));
+        ws.send(JSON.stringify({ kind: "session-request", sessionId: sess.id, request }));
+      }
+    },
+    onError(message) {
+      if (message === lastError) return;
+      lastError = message;
+      sess.emit({ kind: "error", message });
+    },
+  });
+  return sess;
+}
+
+function resolveT3SessionById(id: string): Session | undefined {
+  if (!id.startsWith(T3_SESSION_PREFIX)) return undefined;
+  const threadId = id.slice(T3_SESSION_PREFIX.length);
+  return /^[0-9A-Za-z-]{8,80}$/.test(threadId) ? ensureT3Session(threadId) : undefined;
 }
 
 function cancelTranscriptDispose(sess: Session) {
@@ -2184,6 +2238,12 @@ function startServer() {
       if (prompt) sendPrompt(sess, prompt);
       return Response.json({ id: sess.id, url: `http://127.0.0.1:${server.port}${prefixedPath(`/s/${sess.id}`)}` });
     }
+    const t3Match = url.pathname.match(/^\/t3\/([0-9A-Za-z-]{8,80})\/?$/);
+    if (t3Match && req.method === "GET") {
+      const sess = ensureT3Session(t3Match[1]);
+      scheduleTranscriptDispose(sess);
+      return new Response(null, { status: 302, headers: { location: `${prefixedPath(`/s/${sess.id}`)}${url.search}` } });
+    }
     const terminalMatch = url.pathname.match(/^\/terminal\/([0-9A-Fa-f-]{8,64})\/?$/);
     if (terminalMatch && req.method === "GET") {
       const source = resolveSurfaceTranscript(terminalMatch[1]);
@@ -2444,7 +2504,7 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
       const existing = sessions.get(sessionId);
       const sess = existing
         ? refreshExistingTranscriptSession(existing)
-        : resolveTranscriptSessionById(sessionId);
+        : resolveTranscriptSessionById(sessionId) ?? resolveT3SessionById(sessionId);
       if (!sess) {
         ws.send(JSON.stringify({ kind: "no-session", sessionId: msg.sessionId }));
         return;
@@ -2457,6 +2517,14 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
         events: sess.events,
       }));
       refreshSession(sess);
+      break;
+    }
+    case "respond-request": {
+      const sess = sessions.get(String(msg.sessionId));
+      const decision = String(msg.decision);
+      if (!sess?.internal.t3 || !["accept", "acceptForSession", "decline"].includes(decision)) return;
+      respondT3Request(sess, String(msg.requestId), decision as "accept" | "acceptForSession" | "decline")
+        .catch((err) => sess.emit({ kind: "error", message: safeErrorMessage("respond", err) }));
       break;
     }
     case "focus-terminal": {

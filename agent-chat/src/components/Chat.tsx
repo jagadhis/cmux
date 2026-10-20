@@ -13,6 +13,15 @@ import { ShortcutOverlay, useKeymap } from "../hooks/useKeymap";
 import { useAutoGrow } from "../hooks/useAutoGrow";
 import { loadingProviderOptionIds, providerOptionMap, useFileCatalog, useProviderCatalogs, withFileTrigger } from "../hooks/useCatalogs";
 
+// cmux Agent Home: copy for chats of T3 Code threads (English only in this fork).
+const T3_TEXT = {
+  running: "Working in T3 · Esc to stop",
+  idle: "Synced with your T3 thread",
+  allow: "Allow",
+  allowSession: "Allow for session",
+  deny: "Deny",
+} as const;
+
 function usePersistSessionOptions(provider: string | undefined, options: SessionOption[], skip = false) {
   useEffect(() => {
     if (skip || !provider || !options.length) return;
@@ -56,7 +65,7 @@ function useStickToBottom(scrollRef: RefObject<HTMLDivElement | null>, stickRef:
 }
 
 export function Chat() {
-  const { ready, connectionEpoch, providers, capabilities, providerOptions, session, routing, blocks, options, actions, commands, filesByCwd, fileDiffs, fileDiffErrors, ctrlJ, forkPending, handoffPending, reply, stop, focusTerminal, setOption, fork, handoff, compose, requestProviderOptions, requestProviderCommands, requestFiles, requestFileDiff } = useCtx();
+  const { ready, connectionEpoch, providers, capabilities, providerOptions, session, routing, blocks, options, actions, commands, filesByCwd, fileDiffs, fileDiffErrors, ctrlJ, forkPending, handoffPending, reply, stop, focusTerminal, respondRequest, setOption, fork, handoff, compose, requestProviderOptions, requestProviderCommands, requestFiles, requestFileDiff } = useCtx();
   const [text, setText] = useState(() => draftStorage.getItem(composerDraftKey) || "");
   const [openOptionId, setOpenOptionId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -179,10 +188,23 @@ export function Chat() {
             {session.queuedMessages.map((message) => <AgentMessageRow key={message.id} message={message} />)}
           </div>
         ) : null}
+        {session?.source === "t3" && session.request?.isApproval ? (
+          <div className="t3-request" role="alertdialog" aria-label={session.request.title}>
+            <div className="t3-request-title">{session.request.title}</div>
+            {session.request.detail ? <div className="t3-request-detail">{session.request.detail}</div> : null}
+            <div className="t3-request-actions">
+              <button type="button" className="t3-request-btn" onClick={() => respondRequest(session.request!.id, "decline")}>{T3_TEXT.deny}</button>
+              <button type="button" className="t3-request-btn" onClick={() => respondRequest(session.request!.id, "acceptForSession")}>{T3_TEXT.allowSession}</button>
+              <button type="button" className="t3-request-btn primary" onClick={() => respondRequest(session.request!.id, "accept")}>{T3_TEXT.allow}</button>
+            </div>
+          </div>
+        ) : null}
         {transcriptView && session?.attention ? (
           <div className="terminal-attention" id="terminal-attention" role="status">
             <span className="terminal-attention-text">{session.attention}</span>
-            <button className="terminal-attention-btn" type="button" onClick={focusTerminal}>{agentChatText("answerInTerminal")}</button>
+            {session.source === "t3" ? null : (
+              <button className="terminal-attention-btn" type="button" onClick={focusTerminal}>{agentChatText("answerInTerminal")}</button>
+            )}
           </div>
         ) : null}
         <div id="chat-card">
@@ -213,7 +235,9 @@ export function Chat() {
             <div className="transcript-composer-row">
               <span className="transcript-hint">
                 <span className={running ? "transcript-dot running" : "transcript-dot"} aria-hidden="true" />
-                <span>{agentChatText(running ? "transcriptViewRunning" : "transcriptViewIdle")}</span>
+                <span>{session?.source === "t3"
+                  ? (running ? T3_TEXT.running : T3_TEXT.idle)
+                  : agentChatText(running ? "transcriptViewRunning" : "transcriptViewIdle")}</span>
               </span>
               {chatActions}
             </div>

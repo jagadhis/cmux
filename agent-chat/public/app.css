@@ -723,6 +723,32 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
   background: var(--accent); color: #fff; font: 500 calc(var(--font-size-base) - 2px) var(--font-sans);
 }
 .terminal-attention-btn:hover { filter: brightness(1.08); }
+/* cmux Agent Home: a T3 approval waiting on the user, answered in place. */
+.t3-request {
+  position: absolute; left: 24px; right: 24px; bottom: calc(100% + 7px); z-index: 3;
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 10px 14px; border-radius: 12px;
+  background: color-mix(in srgb, #f0b44c 9%, var(--bg-input));
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, #f0b44c 45%, transparent), 0 10px 26px color-mix(in srgb, #000 26%, transparent);
+  color: var(--text); font: 400 calc(var(--font-size-base) - 1.5px) var(--font-sans);
+  animation: t3-request-in 180ms ease-out;
+}
+@keyframes t3-request-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.t3-request-title { font-weight: 600; color: color-mix(in srgb, #f0b44c 85%, var(--text)); }
+.t3-request-detail {
+  font: 400 calc(var(--font-size-base) - 2px) var(--font-mono, ui-monospace, monospace);
+  padding: 7px 10px; border-radius: 8px; background: color-mix(in srgb, #000 22%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.t3-request-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.t3-request-btn {
+  height: 28px; padding: 0 12px; border: 0; border-radius: 8px; cursor: default;
+  background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text);
+  font: 500 calc(var(--font-size-base) - 2px) var(--font-sans);
+}
+.t3-request-btn:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.t3-request-btn.primary { background: var(--text); color: var(--bg); }
+.t3-request-btn.primary:hover { filter: brightness(1.08); }
+.t3-request-btn:active { transform: scale(0.97); }
 #chat-card {
   display: flex; flex-direction: column; gap: 6px; padding: 6px;
   background: var(--bg-input); border: 0; border-radius: 14px;
