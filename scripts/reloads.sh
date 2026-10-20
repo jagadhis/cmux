@@ -260,6 +260,13 @@ if [[ -f "$INFO_PLIST" ]]; then
 fi
 APP_PATH="$STAGING_APP_PATH"
 
+# jagadhis/cmux fork: CMUX_RELOADS_BUILD_ONLY=1 stops here, leaving a running
+# copy of the app alone (the daily app is installed separately).
+if [[ "${CMUX_RELOADS_BUILD_ONLY:-}" == "1" ]]; then
+  echo "Built (not launched): $APP_PATH"
+  exit 0
+fi
+
 # Ensure any running instance is fully terminated, regardless of DerivedData path.
 /usr/bin/osascript -e "tell application id \"${BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
 sleep 0.3

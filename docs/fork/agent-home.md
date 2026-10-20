@@ -172,6 +172,12 @@ CMUX_DEV_BACKEND_MODE=local CMUX_STAGING_LOCAL_SIGNING=1 ./scripts/reloads.sh --
   - T3 Code running, and the Keychain token `cmux-agent-home-t3-token`.
   - A `~/projects/t3code` checkout close to the installed T3 version.
 
+To rebuild without closing the copy you're using, set `CMUX_RELOADS_BUILD_ONLY=1`. The build is then left in DerivedData and nothing is quit or launched. To install it, quit cmux Home and run:
+
+```
+ditto ~/Library/Developer/Xcode/DerivedData/cmux-home/Build/Products/Release/"cmux Home.app" "/Applications/cmux Home.app"
+```
+
 ### Building on this machine
 
 - **Commands:** `CMUX_DEV_BACKEND_MODE=local ./scripts/reload.sh --tag agent-home`, with Homebrew's rustup on `PATH` (`/opt/homebrew/opt/rustup/bin`). Zig must be 0.16 (`brew install zig@0.16`).
