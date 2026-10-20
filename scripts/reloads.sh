@@ -159,6 +159,11 @@ if [[ -z "$TAG" ]]; then
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   )
 fi
+# Builds without Manaflow's signing team (forks, outside contributors) can't
+# sign the team-scoped entitlements; reload.sh drops them for Release the same way.
+if [[ "${CMUX_STAGING_LOCAL_SIGNING:-}" == "1" ]]; then
+  XCODEBUILD_ARGS+=(CODE_SIGN_ENTITLEMENTS=)
+fi
 XCODEBUILD_ARGS+=(build)
 
 xcodebuild "${XCODEBUILD_ARGS[@]}"
@@ -207,6 +212,11 @@ fi
 # socket path, bundle id, and display name. This prevents conflicts with the
 # production cmux app.
 STAGING_APP_PATH="$(dirname "$APP_PATH")/${APP_NAME}.app"
+# With --name, the search above can find the previous run's staging copy
+# instead of the fresh build; copy from the fresh build, never onto itself.
+if [[ "$APP_PATH" == "$STAGING_APP_PATH" && -d "$(dirname "$APP_PATH")/${FALLBACK_APP_NAME}.app" ]]; then
+  APP_PATH="$(dirname "$APP_PATH")/${FALLBACK_APP_NAME}.app"
+fi
 rm -rf "$STAGING_APP_PATH"
 cp -R "$APP_PATH" "$STAGING_APP_PATH"
 INFO_PLIST="$STAGING_APP_PATH/Contents/Info.plist"

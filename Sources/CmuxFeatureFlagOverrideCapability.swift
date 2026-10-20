@@ -41,6 +41,9 @@ struct CmuxFeatureFlagOverrideCapability: Equatable, Sendable {
     }
 
     func policy(for definition: CmuxFeatureFlagDefinition) -> CmuxFeatureFlagOverridePolicy {
+        // jagadhis/cmux fork: Agent Home's T3 chat runs on Agent Chat, so the
+        // user's own setting wins over upstream's remote rollout for that flag.
+        if definition.key == CmuxFeatureFlags.agentChatUIFlag.key { return .localFirst }
         guard definition.key == CmuxFeatureFlags.cloudMachinesFlag.key else { return .remoteFirst }
         return allowsCloudOverride ? .localFirst : .disabled
     }

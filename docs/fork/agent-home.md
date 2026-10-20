@@ -116,6 +116,7 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - Plans: this Claude Code version has no `TodoWrite` or task-list tool, so Claude cards show no plan for now. Agents that report todos still do.
   - Agent cards read the Feed's in-memory items (`FeedCoordinator.shared.store`), not `~/.cmuxterm/workstream.jsonl`, which redacts paths.
 
+- **Chat-first rework (2026-10-20):** T3 Code is the source of truth. T3 threads are tasks with their sub-threads nested, opened as chat plus terminal, with an Overview tab and New chat. Approvals were verified live: a command request in an approval-required thread was answered from the in-chat card and resolved in T3 as accept.
 - **Phase 6, T3 Code integration: first version running (2026-10-20).**
   - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
   - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.
@@ -123,6 +124,25 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - Clicking a T3 task creates the project if it's missing (tagged with the `t3:` external id), opens a workspace in the task's worktree or the project root, files it under the project, selects it, and records the link in UserDefaults (`agentHomeT3TaskLinks`).
   - On the owner's data, the dev build showed matches under devjags-portfolio and oorva-app, T3-only projects (suttru-tn, oorva-landing, oorva-bookeeping, workspace), and 1,742 unsorted threads.
   - Not built yet: the sorting flow for unsorted threads, resuming a T3 thread's agent session in the new terminal, and "Open in T3".
+
+### Daily app: cmux Home
+
+Build or update the fork's everyday app:
+
+```bash
+CMUX_DEV_BACKEND_MODE=local CMUX_STAGING_LOCAL_SIGNING=1 ./scripts/reloads.sh --name "cmux Home" \
+  --bundle-id com.cmuxterm.app.staging.home \
+  --derived-data ~/Library/Developer/Xcode/DerivedData/cmux-home
+```
+
+- **Separate from upstream:** it's a Release build with its own name and app ID, next to `/Applications/cmux.app`.
+- **Signing:** `CMUX_STAGING_LOCAL_SIGNING=1` drops the entitlements tied to Manaflow's signing team, as `reload.sh` already does for local Release builds. Cloud tunnels, which need the network-extension entitlement, aren't available in cmux Home.
+- **No Sparkle updates:** upstream never compares a `com.cmuxterm.app.staging.*` ID against its Sparkle feed, so cmux Home can't be auto-replaced by upstream cmux.
+- **First-launch defaults:** `AgentHomeFirstLaunchDefaults` selects the Agent Home sidebar, turns on the Agent Chat flag and per-agent usage, and turns off anonymous telemetry. It runs once per app ID, so later changes stick.
+- **Depends on:**
+  - `agentChat.startCommand` in `~/.config/cmux/cmux.json`, which runs `agent-chat/server.ts` from this checkout with bun. Keep this checkout in place.
+  - T3 Code running, and the Keychain token `cmux-agent-home-t3-token`.
+  - A `~/projects/t3code` checkout close to the installed T3 version.
 
 ### Building on this machine
 

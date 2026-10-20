@@ -141,6 +141,7 @@
 		F65760250000000000000001 /* AgentHibernationTranscriptSnapshotRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65760250000000000000002 /* AgentHibernationTranscriptSnapshotRaceTests.swift */; };
 		408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */; };
 		C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */; };
+		80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */; };
 		1E46B226143109A448F863CE /* AgentHomeNewChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */; };
 		FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */; };
 		DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */; };
@@ -4939,6 +4940,7 @@
 		F65760250000000000000002 /* AgentHibernationTranscriptSnapshotRaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHibernationTranscriptSnapshotRaceTests.swift; sourceTree = "<group>"; };
 		B1FB3F3B26C0ACBAFE545992 /* AgentHomeFeedIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedIndex.swift; sourceTree = "<group>"; };
 		1AFA35271F6DF066F43B18E4 /* AgentHomeFeedModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFeedModel.swift; sourceTree = "<group>"; };
+		FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeFirstLaunchDefaults.swift; sourceTree = "<group>"; };
 		D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeNewChatSheet.swift; sourceTree = "<group>"; };
 		30FF71039875B4D0B5E48C1C /* AgentHomeSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSidebarView.swift; sourceTree = "<group>"; };
 		FFD4E3E26A311B0B62611121 /* AgentHomeSnapshotBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHome/AgentHomeSnapshotBuilder.swift; sourceTree = "<group>"; };
@@ -12465,6 +12467,7 @@
 				044832B8CE4FF8E58C6FB0D7 /* AgentHomeT3Model.swift */,
 				78C49A1E35EAC00D5871863A /* AgentHomeT3SidebarRows.swift */,
 				D9F7D001FCB47614A8812101 /* AgentHomeNewChatSheet.swift */,
+				FF6AFFD580A4EB4D43A8E92A /* AgentHomeFirstLaunchDefaults.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -15013,6 +15016,7 @@
 				F65760210000000000000001 /* AgentHibernationTranscriptHookStoreRecord.swift in Sources */,
 				408D42FF132A7F4453B15424 /* AgentHomeFeedIndex.swift in Sources */,
 				C186A0DD121016CD56E2AC41 /* AgentHomeFeedModel.swift in Sources */,
+				80753127D39BD1A795FF5E07 /* AgentHomeFirstLaunchDefaults.swift in Sources */,
 				1E46B226143109A448F863CE /* AgentHomeNewChatSheet.swift in Sources */,
 				FF7D8D083F023785445D9F13 /* AgentHomeSidebarView.swift in Sources */,
 				DD78BD985B62CE46D959DD1F /* AgentHomeSnapshotBuilder.swift in Sources */,
