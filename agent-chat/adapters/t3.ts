@@ -53,6 +53,7 @@ interface EffectModules {
   RpcClient: any;
   RpcSerialization: any;
   Socket: any;
+  Schedule: any;
   WsRpcGroup: any;
 }
 
@@ -61,12 +62,13 @@ function effectModules(): Promise<EffectModules> {
   modulesPromise ??= (async () => {
     const base = join(T3CODE_DIR, "packages", "client-runtime", "src", "rpc") + "/";
     const load = (m: string) => import(Bun.resolveSync(m, base));
-    const [Effect, Layer, Stream, Fiber, RpcClient, RpcSerialization, Socket, contracts] = await Promise.all([
+    const [Effect, Layer, Stream, Fiber, RpcClient, RpcSerialization, Socket, Schedule, contracts] = await Promise.all([
       load("effect/Effect"), load("effect/Layer"), load("effect/Stream"), load("effect/Fiber"),
       load("effect/rpc/RpcClient"), load("effect/rpc/RpcSerialization"), load("effect/socket/Socket"),
+      load("effect/Schedule"),
       import(join(T3CODE_DIR, "packages", "contracts", "src", "index.ts")),
     ]);
-    return { Effect, Layer, Stream, Fiber, RpcClient, RpcSerialization, Socket, WsRpcGroup: contracts.WsRpcGroup };
+    return { Effect, Layer, Stream, Fiber, RpcClient, RpcSerialization, Socket, Schedule, WsRpcGroup: contracts.WsRpcGroup };
   })();
   return modulesPromise;
 }
@@ -90,7 +92,13 @@ interface Connection {
 
 let connectionPromise: Promise<Connection> | undefined;
 
-/** The shared connection to the running T3 server, reconnecting after it drops. */
+/** The shared connection to the running T3 server.
+ *
+ * The socket URL carries a one-time ticket, so a dropped socket (T3 restarted,
+ * say after an update) can't reconnect on its own: the RPC client would retry
+ * the spent ticket forever. Instead it gives up after a few tries and the
+ * connection is dropped (``dropConnection``), so the next call signs in again
+ * with a fresh ticket and re-reads where T3 is listening. */
 function connection(): Promise<Connection> {
   if (connectionPromise) return connectionPromise;
   const pending = (async (): Promise<Connection> => {
@@ -107,7 +115,8 @@ function connection(): Promise<Connection> {
     wsUrl.searchParams.set("orchestrationProtocol", "2");
     wsUrl.searchParams.set("wsTicket", ticket);
 
-    const layer = m.Layer.effect(m.RpcClient.Protocol, m.RpcClient.makeProtocolSocket({})).pipe(
+    const protocol = m.RpcClient.makeProtocolSocket({ retryPolicy: m.Schedule.recurs(2) });
+    const layer = m.Layer.effect(m.RpcClient.Protocol, protocol).pipe(
       m.Layer.provide(m.Layer.mergeAll(
         m.Socket.layerWebSocket(wsUrl.toString()).pipe(m.Layer.provide(m.Socket.layerWebSocketConstructorGlobal)),
         m.RpcSerialization.layerJson,
@@ -136,13 +145,37 @@ function connection(): Promise<Connection> {
   return pending;
 }
 
-async function run<T>(make: (client: any) => any): Promise<T> {
+/** Forgets a broken connection so the next call opens a new one. */
+function dropConnection(conn: Connection) {
+  if (conn.closed) return;
+  conn.closed = true;
+  void effectModules().then((m) => m.Effect.runFork(m.Fiber.interrupt(conn.holder)));
+  void connectionPromise?.then((current) => { if (current === conn) connectionPromise = undefined; }).catch(() => {});
+}
+
+/** Whether an RPC failure came from the socket rather than from T3 answering. */
+export function isConnectionFailure(err: unknown): boolean {
+  const text = `${(err as { _tag?: string })?._tag ?? ""} ${err instanceof Error ? err.message : String(err)}`;
+  return /socket|rpcclient|clientprotocol|ping timeout|websocket|econnrefused|connection (closed|refused)/i.test(text);
+}
+
+/** Runs an RPC. A read that fails on a broken connection is retried once on a new one. */
+async function run<T>(make: (client: any) => any, options: { retry: boolean } = { retry: true }): Promise<T> {
   const [m, conn] = await Promise.all([effectModules(), connection()]);
-  return m.Effect.runPromise(make(conn.client));
+  try {
+    return await m.Effect.runPromise(make(conn.client));
+  } catch (err) {
+    if (!isConnectionFailure(err)) throw err;
+    dropConnection(conn);
+    if (!options.retry) throw new Error("Lost the connection to T3. Try again.");
+    const fresh = await connection();
+    return m.Effect.runPromise(make(fresh.client));
+  }
 }
 
 async function dispatch(command: Record<string, unknown>) {
-  await run((client) => client["orchestration.dispatchCommand"]({ commandId: crypto.randomUUID(), ...command }));
+  // Commands aren't retried: one that reached T3 before the socket broke would run twice.
+  await run((client) => client["orchestration.dispatchCommand"]({ commandId: crypto.randomUUID(), ...command }), { retry: false });
 }
 
 // MARK: - Session wiring
@@ -170,8 +203,9 @@ async function subscribe(sess: SessionCtx, s: T3State) {
     s.subscription = { interrupt: () => m.Effect.runFork(m.Fiber.interrupt(fiber)) };
     fiber.addObserver?.(() => {
       if (s.disposed) return;
-      // The stream ended (T3 restarted or the socket dropped): reconnect shortly.
-      setTimeout(() => { if (!s.disposed) void subscribe(sess, s); }, 2_000);
+      // The stream ended (T3 restarted or the socket dropped): sign in again and resubscribe.
+      dropConnection(conn);
+      setTimeout(() => { if (!s.disposed) void subscribe(sess, s); }, 1_000);
     });
   } catch (err) {
     if (s.disposed) return;
