@@ -39,7 +39,8 @@ import Testing
         #expect(inbox.viewer == "jagadhis")
         #expect(inbox.toReviewTotal == 23)
         let pr = try #require(inbox.toReview.first)
-        #expect(pr.key == "phas-io/Nebula#2525")
+        // T3 stores repositories lowercased; GitHub keeps their casing.
+        #expect(pr.key == "phas-io/nebula#2525")
         #expect(pr.url == "https://github.com/phas-io/Nebula/pull/2525")
         #expect(pr.checks == .passing)
         #expect(pr.review == .required)

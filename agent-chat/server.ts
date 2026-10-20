@@ -26,6 +26,7 @@ import { discoverHarnesses } from "./harnesses";
 import type { HarnessRecommendation } from "./harness-contract";
 import { harnessCatalogs } from "./harness-messages";
 import { gitHubSlugFromRemoteURL } from "./src/githubReferences";
+import { cmuxRpc } from "./cmux-rpc";
 import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -117,6 +118,16 @@ export async function writeStateFileForTest(path: string, port: number) {
 
 initializeAgentPath(process.env, process.platform);
 const ROOT = import.meta.dir;
+
+/// A GitHub link to open beside a task's chat, or null when the request isn't one.
+export function openLinkTarget(url: unknown, workspaceId: unknown): { url: string; workspaceId: string } | null {
+  if (typeof url !== "string" || typeof workspaceId !== "string") return null;
+  if (!/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(workspaceId)) return null;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol !== "https:" || (parsed.hostname !== "github.com" && parsed.hostname !== "www.github.com")) return null;
+  return { url: parsed.toString(), workspaceId };
+}
 const DEFAULT_CWD = `${ROOT}/scratch`;
 const ICON_ROOT = resolve(ROOT, "../Assets.xcassets/AgentIcons");
 const CATALOG_TTL_MS = 10 * 60_000;
@@ -2300,6 +2311,16 @@ function startServer() {
       } catch (err) {
         return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
       }
+    }
+    // cmux Agent Home: a GitHub link clicked in a task's chat opens in a browser
+    // split in that task's workspace. Only github.com URLs and a workspace id.
+    if (url.pathname === "/api/open-link" && req.method === "POST") {
+      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+      const body = (await req.json().catch(() => ({}))) as { url?: unknown; workspaceId?: unknown };
+      const target = openLinkTarget(body.url, body.workspaceId);
+      if (!target) return Response.json({ error: "A github.com URL and a workspace id are required" }, { status: 400 });
+      const result = await cmuxRpc("browser.open_split", { url: target.url, workspace_id: target.workspaceId });
+      return result.ok ? Response.json({ ok: true }) : Response.json({ error: result.error ?? "cmux refused" }, { status: 502 });
     }
     // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
     const t3Action = url.pathname.match(/^\/api\/t3\/threads\/([^/?#]{8,1600})\/(settle|unsettle|visit)$/);

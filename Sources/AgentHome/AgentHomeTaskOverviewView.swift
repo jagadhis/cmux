@@ -52,7 +52,7 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
                 AgentHomeT3TaskHeader(
                     task: t3Task,
                     projectName: t3Model.project(of: t3Task)?.name ?? t3Task.thread.projectName,
-                    shownSubThread: t3Task.subThreads.first { $0.id == shownId },
+                    shownSubThread: shownId == t3Task.thread.id ? nil : t3Task.thread(withId: shownId),
                     mode: mode,
                     onModeChange: { viewState.setMode($0, for: task.id) },
                     onOpenRoot: { t3Model.open(t3Task, tabManager: tabManager) },
@@ -86,10 +86,23 @@ struct AgentHomeWorkspaceArea<Content: View>: View {
                     .transition(.opacity)
                 } else if let task, mode == .overview {
                     if let t3Task {
-                        AgentHomeT3Overview(task: t3Task, shownThreadId: t3Model.shownThreadIds[task.id]) { thread in
-                            viewState.setMode(.sessions, for: task.id)
-                            t3Model.open(t3Task, thread: thread, tabManager: tabManager)
-                        }
+                        AgentHomeT3Overview(
+                            task: t3Task,
+                            shownThreadId: t3Model.shownThreadIds[task.id],
+                            workspaceId: task.id,
+                            tabManager: tabManager,
+                            onOpen: { thread in
+                                viewState.setMode(.sessions, for: task.id)
+                                t3Model.open(t3Task, thread: thread, tabManager: tabManager)
+                            },
+                            onOpenThread: { threadId in
+                                viewState.setMode(.sessions, for: task.id)
+                                t3Model.openThread(id: threadId, tabManager: tabManager)
+                            },
+                            onStartChat: { prompt in
+                                viewState.newChatRequest = .init(projectId: t3Task.thread.projectId, text: prompt)
+                            }
+                        )
                         .id(task.id)
                         .transition(.opacity)
                     } else {
@@ -283,9 +296,9 @@ private struct AgentHomeT3TaskHeader: View {
             Picker("", selection: Binding(get: { mode }, set: onModeChange)) {
                 Text(String(localized: "agentHome.mode.chat", defaultValue: "Chat"))
                     .tag(AgentHomeTaskViewState.Mode.sessions)
-                Text(task.subThreads.isEmpty
+                Text(task.allThreads.count == 1
                     ? String(localized: "agentHome.mode.overview", defaultValue: "Overview")
-                    : String(localized: "agentHome.mode.overviewCount", defaultValue: "Overview · \(task.subThreads.count + 1)"))
+                    : String(localized: "agentHome.mode.overviewCount", defaultValue: "Overview · \(task.allThreads.count)"))
                     .tag(AgentHomeTaskViewState.Mode.overview)
             }
             .pickerStyle(.segmented)
@@ -302,37 +315,64 @@ private struct AgentHomeT3TaskHeader: View {
     }
 }
 
-/// Every session in a T3 task: the main thread and the sub-threads its agents created.
+/// A T3 task at a glance: every session (the main thread, the threads it
+/// handed off to, the sub-threads its agents created) and how the thread on
+/// screen relates to them, beside the pull requests the task linked.
 private struct AgentHomeT3Overview: View {
     let task: T3TaskNode
     let shownThreadId: String?
+    let workspaceId: UUID
+    @ObservedObject var tabManager: TabManager
     let onOpen: (T3Thread) -> Void
+    let onOpenThread: (String) -> Void
+    let onStartChat: (String) -> Void
 
+    private let t3Model = AgentHomeT3Model.shared
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     var body: some View {
-        let sessions = [task.thread] + task.subThreads
+        let sessions = task.allThreads
         let live = sessions.filter { T3ThreadStatus.of($0) < .done }.count
+        let shown = task.thread(withId: shownThreadId ?? task.thread.id) ?? task.thread
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 7) {
-                    Text(String(localized: "agentHome.t3.sessionsInTask", defaultValue: "Sessions in this task"))
-                        .fontWeight(.semibold).foregroundStyle(.tertiary)
-                    Text(live > 0
-                        ? String(localized: "agentHome.t3.sessionsLive", defaultValue: "\(sessions.count) · \(live) live")
-                        : "\(sessions.count)")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.system(size: 11.5))
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
-                    ForEach(sessions, id: \.id) { thread in
-                        AgentHomeT3SessionCard(
-                            thread: thread,
-                            isMain: thread.id == task.thread.id,
-                            isShown: thread.id == (shownThreadId ?? task.thread.id)
-                        ) { onOpen(thread) }
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 7) {
+                            Text(String(localized: "agentHome.t3.sessionsInTask", defaultValue: "Sessions in this task"))
+                                .fontWeight(.semibold).foregroundStyle(.tertiary)
+                            Text(live > 0
+                                ? String(localized: "agentHome.t3.sessionsLive", defaultValue: "\(sessions.count) · \(live) live")
+                                : "\(sessions.count)")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.system(size: 11.5))
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+                            ForEach(sessions, id: \.id) { thread in
+                                AgentHomeT3SessionCard(
+                                    thread: thread,
+                                    role: role(of: thread),
+                                    isShown: thread.id == shown.id
+                                ) { onOpen(thread) }
+                            }
+                        }
                     }
+                    AgentHomeT3RelationshipsCard(
+                        thread: shown,
+                        task: task,
+                        title: { id in task.thread(withId: id)?.title ?? t3Model.thread(withId: id)?.title },
+                        onOpen: onOpenThread
+                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                AgentHomeT3LinkedPullRequests(
+                    task: task,
+                    workspaceId: workspaceId,
+                    tabManager: tabManager,
+                    onStartChat: onStartChat,
+                    onOpenThread: onOpenThread
+                )
+                .frame(width: 330)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
@@ -341,11 +381,18 @@ private struct AgentHomeT3Overview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
     }
+
+    private func role(of thread: T3Thread) -> AgentHomeT3SessionCard.Role {
+        if thread.id == task.thread.id { return .main }
+        return task.handoffs.contains { $0.id == thread.id } ? .handoff : .subThread
+    }
 }
 
 private struct AgentHomeT3SessionCard: View {
+    enum Role { case main, handoff, subThread }
+
     let thread: T3Thread
-    let isMain: Bool
+    let role: Role
     let isShown: Bool
     let onOpen: () -> Void
 
@@ -380,15 +427,17 @@ private struct AgentHomeT3SessionCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
-        .opacity(status >= .done && !isMain ? 0.75 : 1)
+        .opacity(status >= .done && role == .subThread ? 0.75 : 1)
     }
 
     private var kind: AgentHomeAgentKind { thread.agentKind }
 
     private var subtitle: String {
-        var parts = [isMain
-            ? String(localized: "agentHome.t3.mainThread", defaultValue: "Main thread")
-            : String(localized: "agentHome.t3.subThread", defaultValue: "Sub-thread")]
+        var parts: [String] = switch role {
+        case .main: [String(localized: "agentHome.t3.mainThread", defaultValue: "Main thread")]
+        case .handoff: [String(localized: "agentHome.t3.handoffThread", defaultValue: "Handoff")]
+        case .subThread: [String(localized: "agentHome.t3.subThread", defaultValue: "Sub-thread")]
+        }
         parts.append(kind.displayName)
         if let updated = thread.updatedAt { parts.append(AgentHomeFormat.relative(updated)) }
         return parts.joined(separator: " · ")
@@ -469,7 +518,7 @@ private struct AgentHomeTaskOverview: View {
     }
 }
 
-private struct AgentHomeSectionHeader: View {
+struct AgentHomeSectionHeader: View {
     let title: String
     var detail: String?
 
@@ -580,7 +629,7 @@ private struct AgentHomeAgentCard: View {
     }
 }
 
-private struct AgentHomeAgentAvatar: View {
+struct AgentHomeAgentAvatar: View {
     let kind: AgentHomeAgentKind
     let contextFraction: Double?
 
@@ -623,7 +672,7 @@ private struct AgentHomeAgentAvatar: View {
     }
 }
 
-private struct AgentHomeStatePill: View {
+struct AgentHomeStatePill: View {
     let state: AgentHomeAgentState
 
     var body: some View {
@@ -1024,7 +1073,7 @@ private struct AgentHomeCardModifier: ViewModifier {
 }
 
 extension View {
-    fileprivate func agentHomeCard(highlight: Color? = nil, hovered: Bool = false) -> some View {
+    func agentHomeCard(highlight: Color? = nil, hovered: Bool = false) -> some View {
         modifier(AgentHomeCardModifier(highlight: highlight, hovered: hovered))
     }
 }

@@ -40,16 +40,20 @@ public struct T3CodeStateReader: Sendable {
     /// thread of a task in `openTaskIds`, so a task open in cmux stays readable
     /// after it's settled.
     ///
-    /// - Parameter openTaskIds: Root thread ids of tasks open in cmux.
+    /// - Parameters:
+    ///   - openTaskIds: Root thread ids of tasks open in cmux.
+    ///   - includingThreadIds: Threads to read even when settled, such as the
+    ///     thread a listed thread was handed off from, so the handoff stays grouped.
     /// - Returns: The threads, most recently updated first.
     /// - Throws: ``ReadError`` when the database can't be opened or queried.
-    public func activeThreads(openTaskIds: Set<String> = []) throws -> [T3Thread] {
+    public func activeThreads(openTaskIds: Set<String> = [], includingThreadIds: Set<String> = []) throws -> [T3Thread] {
         let db = try open()
         defer { sqlite3_close_v2(db) }
 
-        let pullRequests = try readPullRequests(db)
         let openIds = openTaskIds.sorted()
         let openList = openIds.isEmpty ? "NULL" : Array(repeating: "?", count: openIds.count).joined(separator: ", ")
+        let includedIds = includingThreadIds.sorted()
+        let includedList = includedIds.isEmpty ? "NULL" : Array(repeating: "?", count: includedIds.count).joined(separator: ", ")
         let sql = """
             WITH latest_run AS (
                 SELECT r.thread_id, r.status, r.completed_at
@@ -77,10 +81,11 @@ public struct T3CodeStateReader: Sendable {
                 OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests q
                             WHERE q.thread_id = t.thread_id AND q.status = 'pending')
                 OR coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id) IN (\(openList))
+                OR t.thread_id IN (\(includedList))
               )
             ORDER BY t.updated_at DESC
             """
-        return try query(db, sql, bind: openIds) { row in
+        return try query(db, sql, bind: openIds + includedIds) { row in
             let payload = Self.jsonObject(row.text(7))
             let lineage = payload["lineage"] as? [String: Any]
             let id = row.text(0) ?? ""
@@ -95,10 +100,11 @@ public struct T3CodeStateReader: Sendable {
                 provider: (payload["providerInstanceId"] as? String) ?? row.text(4) ?? "",
                 createdAt: Self.date(row.text(5)),
                 updatedAt: Self.date(row.text(6)),
-                pullRequests: pullRequests[id] ?? [],
+                pullRequests: (payload["pullRequests"] as? [[String: Any]] ?? []).compactMap(T3Thread.PullRequest.fromPayload),
                 parentThreadId: lineage?["parentThreadId"] as? String,
                 rootThreadId: lineage?["rootThreadId"] as? String,
                 relationshipToParent: lineage?["relationshipToParent"] as? String,
+                launchedByThreadId: lineage?["launchedByThreadId"] as? String,
                 latestRunStatus: row.text(9),
                 hasPendingRequest: row.int(10) > 0,
                 latestRunCompletedAt: Self.date(row.text(11)),
@@ -147,40 +153,78 @@ public struct T3CodeStateReader: Sendable {
         }
     }
 
-    /// T3 threads linked to pull requests, keyed by `owner/name#number`, most recently updated thread first.
+    /// T3 threads linked to pull requests, keyed by lowercased `owner/name#number`, most recently updated thread first.
     /// Settled threads count; archived and deleted ones don't.
     public func pullRequestThreads() throws -> [String: PullRequestThread] {
         let db = try open()
         defer { sqlite3_close_v2(db) }
         let sql = """
-            SELECT pr.repository, pr.number, t.thread_id, t.title,
+            SELECT json_extract(pr.value, '$.repository'), json_extract(pr.value, '$.number'), t.thread_id, t.title,
                    coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id)
-            FROM projection_thread_pull_requests pr
-            JOIN orchestration_v2_projection_threads t ON t.thread_id = pr.thread_id
+            FROM orchestration_v2_projection_threads t, json_each(t.payload_json, '$.pullRequests') pr
             WHERE t.archived_at IS NULL AND t.deleted_at IS NULL
+              AND json_valid(t.payload_json)
+              AND coalesce(json_extract(pr.value, '$.source'), '') <> 'stack-dismissed'
             ORDER BY t.updated_at ASC
             """
         let rows: [(String, PullRequestThread)] = try query(db, sql) { row in
-            ("\(row.text(0) ?? "")#\(row.int(1))", PullRequestThread(threadId: row.text(2) ?? "", title: row.text(3) ?? "", taskId: row.text(4) ?? ""))
+            ("\((row.text(0) ?? "").lowercased())#\(row.int(1))", PullRequestThread(threadId: row.text(2) ?? "", title: row.text(3) ?? "", taskId: row.text(4) ?? ""))
         }
         // Later rows are newer, so they win.
         return Dictionary(rows, uniquingKeysWith: { _, newer in newer })
     }
 
-    private func readPullRequests(_ db: OpaquePointer) throws -> [String: [T3Thread.PullRequest]] {
-        let sql = "SELECT thread_id, repository, number, url, snapshot_json FROM projection_thread_pull_requests"
-        let rows: [(String, T3Thread.PullRequest)] = try query(db, sql) { row in
-            let snapshot = Self.jsonObject(row.text(4))
-            let pullRequest = T3Thread.PullRequest(
-                repository: row.text(1) ?? "",
-                number: row.int(2),
-                url: row.text(3).flatMap(URL.init(string:)),
-                title: snapshot["title"] as? String,
-                state: snapshot["state"] as? String
-            )
-            return (row.text(0) ?? "", pullRequest)
+    /// Reads thread launches (handoffs) added since the index last looked.
+    ///
+    /// The first call reads every launch call in T3's history (a second or
+    /// two on a large database); later calls read only new rows, plus calls
+    /// that hadn't finished last time.
+    ///
+    /// When T3 has compacted or rebuilt its database since the last read, row
+    /// ids may have changed, so the history is read again. With `allowsFullRead`
+    /// off, the index is only marked for that, so a caller can do the slow read
+    /// in the background (the index keeps its known launches meanwhile).
+    ///
+    /// - Parameters:
+    ///   - index: The index to bring up to date.
+    ///   - allowsFullRead: Whether to read the whole history now when needed.
+    /// - Throws: ``ReadError`` when the database can't be opened or queried.
+    public func updateLaunchIndex(_ index: inout T3LaunchIndex, allowsFullRead: Bool = true) throws {
+        let db = try open()
+        defer { sqlite3_close_v2(db) }
+
+        let marker = (try? String(contentsOf: compactionMarkerURL, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxRowId = try query(db, "SELECT coalesce(max(rowid), 0) FROM orchestration_v2_projection_turn_items") { Int64($0.int(0)) }.first ?? 0
+        // Compaction can renumber rows; fewer rows than last time means a rebuild.
+        if index.hasScanned, marker != index.compactionMarker || maxRowId < index.scannedThroughRowId {
+            index.reset()
         }
-        return Dictionary(grouping: rows, by: \.0).mapValues { $0.map(\.1) }
+        if !index.hasScanned, !allowsFullRead { return }
+        index.compactionMarker = marker
+
+        let unfinished = index.unfinishedRowIds.sorted().map(String.init)
+        let unfinishedList = unfinished.isEmpty ? "NULL" : unfinished.joined(separator: ", ")
+        let sql = """
+            SELECT rowid, thread_id, json_extract(payload_json, '$.toolName'), json_extract(payload_json, '$.status'),
+                   json_extract(payload_json, '$.output')
+            FROM orchestration_v2_projection_turn_items
+            WHERE (rowid > \(index.scannedThroughRowId) OR rowid IN (\(unfinishedList)))
+              AND type = 'dynamic_tool'
+              AND (payload_json LIKE '%t3_thread_launch%' OR payload_json LIKE '%create_threads%')
+            """
+        let rows = try query(db, sql) { row in
+            (Int64(row.int(0)), row.text(1) ?? "", row.text(2) ?? "", row.text(3), row.text(4))
+        }
+        for (rowId, threadId, toolName, status, output) in rows {
+            let outputObject = output.map { Self.jsonObject($0) }
+            index.record(rowId: rowId, threadId: threadId, toolName: toolName, status: status, output: outputObject)
+        }
+        index.finishScan(through: maxRowId)
+    }
+
+    /// T3 rewrites `compacted-at` next to its database when it compacts it.
+    var compactionMarkerURL: URL {
+        databaseURL.deletingLastPathComponent().appendingPathComponent("compacted-at")
     }
 
     private func open() throws -> OpaquePointer {
@@ -237,10 +281,6 @@ public struct T3CodeStateReader: Sendable {
     }
 
     static func date(_ text: String?) -> Date? {
-        guard let text else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: text) { return date }
-        return ISO8601DateFormatter().date(from: text)
+        T3Dates.parse(text)
     }
 }

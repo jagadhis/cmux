@@ -26,15 +26,17 @@ struct AgentHomeT3TaskRow: View {
                 AgentHomeT3VerifyButton(compact: true, action: onVerify)
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
             } else {
-                if !task.subThreads.isEmpty {
-                    Text(task.subThreads.count, format: .number)
+                if !task.subThreads.isEmpty || !task.handoffs.isEmpty {
+                    Text(task.subThreads.count + task.handoffs.count, format: .number)
                         .font(.system(size: 10.5).monospacedDigit())
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 5)
                         .background(Capsule().fill(Color.primary.opacity(0.06)))
-                        .help(String(localized: "agentHome.t3.subThreads", defaultValue: "\(task.subThreads.count) sub-threads"))
+                        .help(task.handoffs.isEmpty
+                            ? String(localized: "agentHome.t3.subThreads", defaultValue: "\(task.subThreads.count) sub-threads")
+                            : String(localized: "agentHome.t3.handoffsAndSubThreads", defaultValue: "\(task.handoffs.count) handoffs, \(task.subThreads.count) sub-threads"))
                 }
-                AgentHomeT3StatusDot(status: status, unseen: unseen, endedEarly: task.thread.latestRunEndedEarly)
+                AgentHomeT3StatusDot(status: status, unseen: unseen, endedEarly: task.latestRunEndedEarly)
             }
         }
         .padding(.leading, 24)
@@ -87,9 +89,11 @@ struct AgentHomeT3VerifyButton: View {
     }
 }
 
-/// A sub-thread an agent created, nested under its task.
+/// A thread nested under its task: a sub-thread an agent created, or a thread
+/// an agent handed the work off to.
 struct AgentHomeT3SubThreadRow: View {
     let thread: T3Thread
+    var isHandoff = false
     let isSelected: Bool
     let onOpen: () -> Void
 
@@ -98,16 +102,28 @@ struct AgentHomeT3SubThreadRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 6) {
-                Text(verbatim: "↳")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                if isHandoff {
+                    Image(systemName: "arrowshape.turn.up.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .help(String(localized: "agentHome.t3.handoff", defaultValue: "Handed off from this task"))
+                } else {
+                    Text(verbatim: "↳")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
                 Text(thread.title)
                     .font(.system(size: 12.5))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .foregroundStyle(isSelected ? .primary : .secondary)
                 Spacer(minLength: 4)
-                AgentHomeT3StatusDot(status: T3ThreadStatus.of(thread), showsDone: true)
+                AgentHomeT3StatusDot(
+                    status: T3ThreadStatus.of(thread),
+                    showsDone: true,
+                    unseen: thread.hasUnseenResult,
+                    endedEarly: thread.latestRunEndedEarly
+                )
             }
             .padding(.leading, 34)
             .padding(.horizontal, 9)
@@ -246,7 +262,7 @@ struct AgentHomeT3StatusBar: View {
             }
         case .done:
             HStack(spacing: 8) {
-                let endedEarly = task.thread.latestRunEndedEarly
+                let endedEarly = task.latestRunEndedEarly
                 pill(
                     endedEarly
                         ? String(localized: "agentHome.state.stopped", defaultValue: "Stopped")
@@ -259,7 +275,7 @@ struct AgentHomeT3StatusBar: View {
             }
             .transition(.opacity)
         case .idle:
-            if task.thread.isSettled {
+            if task.mainThreads.allSatisfy(\.isSettled) {
                 pill(String(localized: "agentHome.state.verified", defaultValue: "Verified"), color: .secondary) {
                     Image(systemName: "checkmark.seal").font(.system(size: 10))
                 }

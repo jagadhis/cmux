@@ -145,6 +145,23 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - A T3 chat's composer shows the thread's model, reasoning level and fast mode. They're read from the thread's `modelSelection`, and the choices come from T3's `server.getConfig` providers (cached for 60 s). Changing one dispatches `thread.model-selection.set`. Option values the new model also accepts are kept. Verified live in both directions: a change in cmux landed in T3, and a change in T3 showed in cmux.
   - When the agent asks questions (`user_input` requests), a card above the composer shows them one at a time. It shows the header, a progress count and option rows with 1–9 shortcuts, plus Back, Next/Submit for multi-select, and Skip when T3 allows it. Typing in the composer answers the current question with custom text. Answers go out as `runtime-request.respond` with `answers`, keyed by question id, using the option value or label, or an array for multi-select. Answered questions show in the transcript as the user's reply ("Header: answer").
   - The card's flows (single pick, multi-select, typed answer) and the model picker are checked in the gallery (`/gallery#t3-thread`). Live, questions on the test thread were answered from elsewhere within seconds every time, so the card wasn't clicked against a live request.
+- **Handoffs, links and linked pull requests (2026-10-20):**
+  - **Handoffs group under the thread that started them.** An agent that hands work off starts a new top-level thread with `t3_thread_launch` or `create_threads`. T3 records no parent for it; the only record is the launching thread's tool call, whose result names the new thread.
+    - `T3LaunchIndex` reads those tool calls from `orchestration_v2_projection_turn_items`. The first read of the owner's 6 GB database took about 6 s, so it runs in the background and the index is saved to Application Support. After that it reads only new rows by row id (about 1 ms), plus calls that hadn't finished.
+    - A `lineage.launchedByThreadId` on the thread, if T3 records one, takes precedence.
+    - A handed-off thread joins its launcher's task, and so does everything below it, so a chain groups under the first thread. A settled launcher is read as well, so the group stays together. The sidebar lists handoffs under the task with their own icon. Mark verified settles the main thread and every handoff, and Undo unsettles them.
+  - **Links in chats.**
+    - T3 thread links (`t3-thread://v1/<id>`) render as chips. Clicking one loads that thread's chat with `via=link`. cmux watches each task's chat URL: a thread in the same task is shown in place, and a thread in another task opens that task while the chat goes back to its previous thread.
+    - A plain click on a github.com link asks the sidecar (`POST /api/open-link`) to run `browser.open_split` in the chat's workspace. The workspace id comes from the chat URL. Modified clicks keep the browser's default.
+  - **Task overview.**
+    - Sessions are labelled main, handoff or sub-thread.
+    - A Relationships card shows, for the thread on screen: handed off from, handed off to, parent or fork source, and sub-threads. Each one opens that thread.
+    - **Linked pull requests**, modelled on T3's panel:
+      - Data comes from each thread's `pullRequests` payload, which T3 re-syncs every minute. The legacy `projection_thread_pull_requests` table held only 35 of the owner's 346 links.
+      - Pull requests based on each other (or in a native stack) form a chain, bottom first.
+      - Each row shows state, checks, review, conflicts, +/−, author and head → base.
+      - Each row offers T3's next step: Resolve and Fix open New chat with T3's prompt; Ready runs `gh pr ready`; Merge asks first, then runs `gh pr merge` with the first method the repository allows.
+      - Clicking a row opens the pull request beside the task's terminal, signed in to GitHub.
 - **Phase 6, T3 Code integration: first version running (2026-10-20).**
   - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
   - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.
