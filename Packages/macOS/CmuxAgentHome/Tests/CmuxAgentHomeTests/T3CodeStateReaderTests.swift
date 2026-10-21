@@ -308,6 +308,33 @@ import Testing
         #expect(T3ThreadStatus.of(failed) == .idle)
     }
 
+    @Test func oneConnectionServesSeveralReads() throws {
+        let url = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = T3CodeStateReader(databaseURL: url)
+
+        let (threads, projects, files) = try reader.withConnection { connection in
+            (try connection.activeThreads(), try connection.projects(), try connection.sessionFiles(threadIds: ["t1"]))
+        }
+        #expect(threads.map(\.id) == (try reader.activeThreads()).map(\.id))
+        #expect(projects == (try reader.projects()))
+        #expect(files == (try reader.sessionFiles(threadIds: ["t1"])))
+    }
+
+    @Test func changeStampMovesWhenTheDatabaseIsWritten() throws {
+        let url = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let reader = T3CodeStateReader(databaseURL: url)
+        let before = reader.changeStamp()
+        #expect(reader.changeStamp() == before)
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "INSERT INTO projection_projects VALUES ('p9', 'new', '/tmp/new', NULL)", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        #expect(reader.changeStamp() != before)
+    }
+
     @Test func missingDatabaseThrows() {
         let reader = T3CodeStateReader(databaseURL: URL(fileURLWithPath: "/nonexistent/statev2.sqlite"))
         #expect(throws: T3CodeStateReader.ReadError.self) { try reader.activeThreads() }

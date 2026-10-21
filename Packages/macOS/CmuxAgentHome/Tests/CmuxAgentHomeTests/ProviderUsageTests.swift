@@ -119,6 +119,29 @@ import Testing
         #expect(digest.sourceProblems.map(\.message) == ["One file was too large."])
     }
 
+    @Test func slotsStartAtLocalMidnightOrTheirHour() throws {
+        let tokyo = try #require(TimeZone(identifier: "Asia/Tokyo"))
+        let daily = ProviderUsageDigest(
+            summary: ProviderUsageSummary(sinceDay: "2026-10-19", untilDay: "2026-10-20", buckets: [
+                ProviderUsageSummary.Bucket(day: "2026-10-20", provider: "claude", model: "m", costUsd: 1),
+            ]),
+            accounts: [],
+            timeZone: tokyo
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = tokyo
+        #expect(daily.points.first?.slotStart == calendar.date(from: DateComponents(year: 2026, month: 10, day: 20)))
+
+        let hourly = ProviderUsageDigest(
+            summary: ProviderUsageSummary(sinceDay: "2026-10-20", untilDay: "2026-10-20", buckets: [
+                ProviderUsageSummary.Bucket(day: "2026-10-20", hourStart: "2026-10-20T05:00:00.000Z", provider: "claude", model: "m", costUsd: 1),
+                ProviderUsageSummary.Bucket(day: "2026-10-20", hourStart: "not a date", provider: "claude", model: "m", costUsd: 1),
+            ]),
+            accounts: []
+        )
+        #expect(hourly.points.map(\.slotStart) == [Date(timeIntervalSince1970: 1_792_472_400), nil])
+    }
+
     @Test func doesNotTreatASiblingFolderAsTheAccountsOwn() {
         let account = ProviderAccountLimits(id: "a", driver: "claudeAgent", name: "A", homePath: "/Users/me/.claude/")
         let bucket = ProviderUsageSummary.Bucket(day: "2026-10-20", provider: "claude", model: "m", sourcePath: "/Users/me/.claude_team2/projects")

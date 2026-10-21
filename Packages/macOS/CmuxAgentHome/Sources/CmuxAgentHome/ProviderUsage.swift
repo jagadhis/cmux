@@ -271,7 +271,7 @@ public struct ProviderUsageSummary: Equatable, Sendable {
     }
 
     /// The usage provider kind T3 records a driver's spend under.
-    public static func usageProvider(forDriver driver: String) -> String {
+    static func usageProvider(forDriver driver: String) -> String {
         driver == "claudeAgent" ? "claude" : driver
     }
 }
@@ -297,6 +297,9 @@ public struct ProviderUsageDigest: Equatable, Sendable {
     public struct Point: Equatable, Sendable {
         /// `YYYY-MM-DD`, or the hour's start for hourly summaries.
         public var slot: String
+        /// When the slot starts: local midnight for a day, the hour's start for an hour.
+        /// `nil` when the slot isn't a date.
+        public var slotStart: Date?
         public var spenderId: String
         public var costUsd: Double
         public var tokens: Int
@@ -327,7 +330,16 @@ public struct ProviderUsageDigest: Equatable, Sendable {
     /// Transcript folders T3 couldn't fully read, with its message.
     public var sourceProblems: [ProviderUsageSummary.Source] = []
 
-    public init(summary: ProviderUsageSummary, accounts: [ProviderAccountLimits]) {
+    /// Works out the digest.
+    ///
+    /// - Parameters:
+    ///   - summary: The usage summary.
+    ///   - accounts: The provider accounts, to attribute spend to.
+    ///   - timeZone: The summary's time zone, for day slots' starts. Defaults to
+    ///     the current one, which the app asks T3 to summarise in.
+    public init(summary: ProviderUsageSummary, accounts: [ProviderAccountLimits], timeZone: TimeZone = .current) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
         var spenders: [String: Spender] = [:]
         var points: [String: Point] = [:]
         var models: [String: ModelRow] = [:]
@@ -344,8 +356,12 @@ public struct ProviderUsageDigest: Equatable, Sendable {
 
             let slot = bucket.hourStart ?? bucket.day
             let pointKey = "\(slot)\u{1}\(spender.id)"
-            points[pointKey, default: Point(slot: slot, spenderId: spender.id, costUsd: 0, tokens: 0)].costUsd += bucket.costUsd
-            points[pointKey, default: Point(slot: slot, spenderId: spender.id, costUsd: 0, tokens: 0)].tokens += bucket.totalTokens
+            if points[pointKey] == nil {
+                let start = bucket.hourStart == nil ? Self.dayStart(slot, calendar: calendar) : T3Dates.parse(slot)
+                points[pointKey] = Point(slot: slot, slotStart: start, spenderId: spender.id, costUsd: 0, tokens: 0)
+            }
+            points[pointKey]?.costUsd += bucket.costUsd
+            points[pointKey]?.tokens += bucket.totalTokens
 
             let model = ModelRow(provider: bucket.provider, model: bucket.model, costUsd: 0, tokens: 0, outputTokens: 0)
             models[model.id, default: model].costUsd += bucket.costUsd
@@ -371,7 +387,7 @@ public struct ProviderUsageDigest: Equatable, Sendable {
             accounts
                 .filter { $0.usageProvider == bucket.provider }
                 .compactMap { account -> (ProviderAccountLimits, Int)? in
-                    guard let home = account.homePath.map(Self.trimmingTrailingSlash), !home.isEmpty,
+                    guard let home = account.homePath.map(\.trimmingTrailingSlash), !home.isEmpty,
                           path == home || path.hasPrefix(home + "/")
                     else { return nil }
                     return (account, home.count)
@@ -391,8 +407,15 @@ public struct ProviderUsageDigest: Equatable, Sendable {
         )
     }
 
+    /// Midnight starting a `YYYY-MM-DD` day in the calendar's time zone.
+    static func dayStart(_ day: String, calendar: Calendar) -> Date? {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard day.count == 10, parts.count == 3 else { return nil }
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+
     /// T3's display name for a usage provider kind.
-    public static func providerName(_ provider: String) -> String {
+    static func providerName(_ provider: String) -> String {
         switch provider {
         case "claude": return "Claude Code"
         case "codex": return "Codex"
@@ -405,9 +428,6 @@ public struct ProviderUsageDigest: Equatable, Sendable {
         }
     }
 
-    private static func trimmingTrailingSlash(_ path: String) -> String {
-        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
-    }
 }
 
 // MARK: - Wire format
@@ -502,10 +522,7 @@ private enum Wire {
     }
 
     static func date(_ string: String?) -> Date? {
-        guard let string else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
+        T3Dates.parse(string)
     }
 }
 

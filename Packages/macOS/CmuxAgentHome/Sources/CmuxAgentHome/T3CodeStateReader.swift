@@ -16,7 +16,7 @@ public struct T3CodeStateReader: Sendable {
     }
 
     /// The database file.
-    public var databaseURL: URL
+    public let databaseURL: URL
 
     /// The default database location, `~/.t3/userdata/statev2.sqlite`.
     public static var defaultDatabaseURL: URL {
@@ -47,8 +47,10 @@ public struct T3CodeStateReader: Sendable {
     /// - Returns: The threads, most recently updated first.
     /// - Throws: ``ReadError`` when the database can't be opened or queried.
     public func activeThreads(openTaskIds: Set<String> = [], includingThreadIds: Set<String> = []) throws -> [T3Thread] {
-        let db = try open()
-        defer { sqlite3_close_v2(db) }
+        try withConnection { try $0.activeThreads(openTaskIds: openTaskIds, includingThreadIds: includingThreadIds) }
+    }
+
+    func activeThreads(in db: OpaquePointer, openTaskIds: Set<String>, includingThreadIds: Set<String>) throws -> [T3Thread] {
 
         let openIds = openTaskIds.sorted()
         let openList = openIds.isEmpty ? "NULL" : Array(repeating: "?", count: openIds.count).joined(separator: ", ")
@@ -99,7 +101,7 @@ public struct T3CodeStateReader: Sendable {
             ORDER BY t.updated_at DESC
             """
         return try query(db, sql, bind: openIds + includedIds) { row in
-            let payload = Self.jsonObject(row.text(7))
+            let payload = row.text(7)?.agentHomeJSONDictionary ?? [:]
             let lineage = payload["lineage"] as? [String: Any]
             let id = row.text(0) ?? ""
             return T3Thread(
@@ -152,8 +154,10 @@ public struct T3CodeStateReader: Sendable {
     /// Every T3 project that isn't deleted, by name. New chats can start in any of them,
     /// including ones whose threads are all settled.
     public func projects() throws -> [Project] {
-        let db = try open()
-        defer { sqlite3_close_v2(db) }
+        try withConnection { try $0.projects() }
+    }
+
+    func projects(in db: OpaquePointer) throws -> [Project] {
         let sql = "SELECT project_id, title, workspace_root FROM projection_projects WHERE deleted_at IS NULL ORDER BY title COLLATE NOCASE"
         return try query(db, sql) { row in
             Project(id: row.text(0) ?? "", name: row.text(1) ?? "", root: row.text(2) ?? "")
@@ -178,8 +182,10 @@ public struct T3CodeStateReader: Sendable {
     /// T3 threads linked to pull requests, keyed by lowercased `owner/name#number`, most recently updated thread first.
     /// Settled threads count; archived and deleted ones don't.
     public func pullRequestThreads() throws -> [String: PullRequestThread] {
-        let db = try open()
-        defer { sqlite3_close_v2(db) }
+        try withConnection { try $0.pullRequestThreads() }
+    }
+
+    func pullRequestThreads(in db: OpaquePointer) throws -> [String: PullRequestThread] {
         let sql = """
             SELECT json_extract(pr.value, '$.repository'), json_extract(pr.value, '$.number'), t.thread_id, t.title,
                    coalesce(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id)
@@ -190,7 +196,7 @@ public struct T3CodeStateReader: Sendable {
             ORDER BY t.updated_at ASC
             """
         let rows: [(String, PullRequestThread)] = try query(db, sql) { row in
-            ("\((row.text(0) ?? "").lowercased())#\(row.int(1))", PullRequestThread(threadId: row.text(2) ?? "", title: row.text(3) ?? "", taskId: row.text(4) ?? ""))
+            (GitHubPullRequestRef.key(repository: row.text(0) ?? "", number: row.int(1)), PullRequestThread(threadId: row.text(2) ?? "", title: row.text(3) ?? "", taskId: row.text(4) ?? ""))
         }
         // Later rows are newer, so they win.
         return Dictionary(rows, uniquingKeysWith: { _, newer in newer })
@@ -208,8 +214,11 @@ public struct T3CodeStateReader: Sendable {
     /// - Throws: ``ReadError`` when the database can't be opened or queried.
     public func sessionFiles(threadIds: [String]) throws -> [String: [AgentSessionFile]] {
         guard !threadIds.isEmpty else { return [:] }
-        let db = try open()
-        defer { sqlite3_close_v2(db) }
+        return try withConnection { try $0.sessionFiles(threadIds: threadIds) }
+    }
+
+    func sessionFiles(in db: OpaquePointer, threadIds: [String]) throws -> [String: [AgentSessionFile]] {
+        guard !threadIds.isEmpty else { return [:] }
         let ids = Array(Set(threadIds)).sorted()
         let list = Array(repeating: "?", count: ids.count).joined(separator: ", ")
         let sql = """
@@ -251,8 +260,10 @@ public struct T3CodeStateReader: Sendable {
     ///   - allowsFullRead: Whether to read the whole history now when needed.
     /// - Throws: ``ReadError`` when the database can't be opened or queried.
     public func updateLaunchIndex(_ index: inout T3LaunchIndex, allowsFullRead: Bool = true) throws {
-        let db = try open()
-        defer { sqlite3_close_v2(db) }
+        try withConnection { try $0.updateLaunchIndex(&index, allowsFullRead: allowsFullRead) }
+    }
+
+    func updateLaunchIndex(in db: OpaquePointer, _ index: inout T3LaunchIndex, allowsFullRead: Bool) throws {
 
         let marker = (try? String(contentsOf: compactionMarkerURL, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         let maxRowId = try query(db, "SELECT coalesce(max(rowid), 0) FROM orchestration_v2_projection_turn_items") { Int64($0.int(0)) }.first ?? 0
@@ -277,10 +288,85 @@ public struct T3CodeStateReader: Sendable {
             (Int64(row.int(0)), row.text(1) ?? "", row.text(2) ?? "", row.text(3), row.text(4))
         }
         for (rowId, threadId, toolName, status, output) in rows {
-            let outputObject = output.map { Self.jsonObject($0) }
+            let outputObject = output.map(\.agentHomeJSONDictionary)
             index.record(rowId: rowId, threadId: threadId, toolName: toolName, status: status, output: outputObject)
         }
         index.finishScan(through: maxRowId)
+    }
+
+    // MARK: - Connection
+
+    /// Opens one read-only connection for several reads in a row, such as a poll.
+    ///
+    /// The connection closes when `body` returns; don't keep it.
+    ///
+    /// ```swift
+    /// let (threads, projects) = try reader.withConnection { connection in
+    ///     (try connection.activeThreads(), try connection.projects())
+    /// }
+    /// ```
+    ///
+    /// - Parameter body: The reads to run.
+    /// - Returns: What `body` returns.
+    /// - Throws: ``ReadError`` when the database can't be opened, or what `body` throws.
+    public func withConnection<T>(_ body: (Connection) throws -> T) throws -> T {
+        let db = try open()
+        defer { sqlite3_close_v2(db) }
+        return try body(Connection(reader: self, db: db))
+    }
+
+    /// One open read-only connection, valid inside ``T3CodeStateReader/withConnection(_:)``.
+    public struct Connection {
+        let reader: T3CodeStateReader
+        let db: OpaquePointer
+
+        /// Reads the threads Agent Home lists; see ``T3CodeStateReader/activeThreads(openTaskIds:includingThreadIds:)``.
+        public func activeThreads(openTaskIds: Set<String> = [], includingThreadIds: Set<String> = []) throws -> [T3Thread] {
+            try reader.activeThreads(in: db, openTaskIds: openTaskIds, includingThreadIds: includingThreadIds)
+        }
+
+        /// Every T3 project that isn't deleted; see ``T3CodeStateReader/projects()``.
+        public func projects() throws -> [Project] {
+            try reader.projects(in: db)
+        }
+
+        /// T3 threads linked to pull requests; see ``T3CodeStateReader/pullRequestThreads()``.
+        public func pullRequestThreads() throws -> [String: PullRequestThread] {
+            try reader.pullRequestThreads(in: db)
+        }
+
+        /// The files each thread's agent wrote; see ``T3CodeStateReader/sessionFiles(threadIds:)``.
+        public func sessionFiles(threadIds: [String]) throws -> [String: [AgentSessionFile]] {
+            try reader.sessionFiles(in: db, threadIds: threadIds)
+        }
+
+        /// Reads new thread launches; see ``T3CodeStateReader/updateLaunchIndex(_:allowsFullRead:)``.
+        public func updateLaunchIndex(_ index: inout T3LaunchIndex, allowsFullRead: Bool = true) throws {
+            try reader.updateLaunchIndex(in: db, &index, allowsFullRead: allowsFullRead)
+        }
+    }
+
+    // MARK: - Change detection
+
+    /// The database files' sizes and modification times. T3 writes through
+    /// its write-ahead log, so an unchanged stamp means nothing new to read.
+    public struct ChangeStamp: Hashable, Sendable {
+        var files: [String: [Double]]
+    }
+
+    /// The current ``ChangeStamp`` of the database and its `-wal` file.
+    ///
+    /// - Parameter fileManager: Reads the files' attributes.
+    /// - Returns: The stamp; a missing file counts as empty.
+    public func changeStamp(fileManager: FileManager = .default) -> ChangeStamp {
+        var files: [String: [Double]] = [:]
+        for path in [databaseURL.path, databaseURL.path + "-wal"] {
+            let attributes = try? fileManager.attributesOfItem(atPath: path)
+            let size = (attributes?[.size] as? NSNumber)?.doubleValue ?? -1
+            let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? -1
+            files[path] = [size, modified]
+        }
+        return ChangeStamp(files: files)
     }
 
     /// T3 rewrites `compacted-at` next to its database when it compacts it.
@@ -336,13 +422,6 @@ public struct T3CodeStateReader: Sendable {
         func int(_ column: Int32) -> Int {
             Int(sqlite3_column_int64(statement, column))
         }
-    }
-
-    static func jsonObject(_ text: String?) -> [String: Any] {
-        guard let data = text?.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [:] }
-        return object
     }
 
     static func date(_ text: String?) -> Date? {

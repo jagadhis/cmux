@@ -72,7 +72,7 @@ public struct GitHubPullRequest: Identifiable, Hashable, Sendable {
 
     /// `owner/name#number`, lowercased, the key T3 links threads to pull requests by.
     /// GitHub keeps the repository's casing; T3 stores it lowercased.
-    public var key: String { "\(repository.lowercased())#\(number)" }
+    public var key: String { GitHubPullRequestRef.key(repository: repository, number: number) }
 
     /// What the author should do next with one of their own pull requests, most pressing first.
     public var nextStep: GitHubPullRequestNextStep {

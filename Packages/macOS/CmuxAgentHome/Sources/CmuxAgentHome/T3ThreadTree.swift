@@ -14,7 +14,7 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
     public static func < (lhs: T3ThreadStatus, rhs: T3ThreadStatus) -> Bool { lhs.rawValue < rhs.rawValue }
 
     /// Run statuses that mean the agent is still going.
-    public static let activeRunStatuses: Set<String> = ["preparing", "queued", "starting", "running", "waiting"]
+    static let activeRunStatuses: Set<String> = ["preparing", "queued", "starting", "running", "waiting"]
 
     /// The status of one thread. A pending request only counts while a run is
     /// active, so a stale request on a finished thread doesn't raise "needs you".
@@ -37,14 +37,28 @@ public enum T3ThreadStatus: Int, Sendable, Comparable {
 
 /// A task: a thread the user started, with the threads its agents handed work
 /// off to and every sub-thread they created under it.
+///
+/// What's derived from the threads (status, last activity, lookups by id) is
+/// worked out once here, since sidebar sorting and rows ask for it repeatedly.
 public struct T3TaskNode: Identifiable, Hashable, Sendable {
     /// The thread the user started: the top of the handoff chain.
-    public var thread: T3Thread
+    public let thread: T3Thread
     /// Threads an agent in this task started as new top-level threads
     /// (`t3_thread_launch`, `create_threads`), oldest first, so the chain reads top down.
-    public var handoffs: [T3Thread]
+    public let handoffs: [T3Thread]
     /// Sub-threads anywhere below the main thread or its handoffs, most recently updated first.
-    public var subThreads: [T3Thread]
+    public let subThreads: [T3Thread]
+
+    /// The main thread, then its handoffs, then sub-threads.
+    public let allThreads: [T3Thread]
+    /// The most urgent status of every thread in the task.
+    public let status: T3ThreadStatus
+    /// When any thread in the task last changed.
+    public let lastActivity: Date?
+    /// Sub-threads that are running or waiting on the user.
+    public let liveSubThreadCount: Int
+    /// Positions in ``allThreads`` by thread id; the first wins for a repeated id.
+    private let indexById: [String: Int]
 
     /// Creates a task.
     ///
@@ -56,30 +70,23 @@ public struct T3TaskNode: Identifiable, Hashable, Sendable {
         self.thread = thread
         self.handoffs = handoffs
         self.subThreads = subThreads
+        let all = [thread] + handoffs + subThreads
+        allThreads = all
+        status = all.map(T3ThreadStatus.of).min() ?? .idle
+        lastActivity = all.compactMap(\.updatedAt).max()
+        liveSubThreadCount = subThreads.filter { T3ThreadStatus.of($0) < .done }.count
+        indexById = Dictionary(all.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// The task id: the root thread's id.
     public var id: String { thread.id }
-
-    /// The main thread, then its handoffs, then sub-threads.
-    public var allThreads: [T3Thread] { [thread] + handoffs + subThreads }
 
     /// The main thread and its handoffs: the threads the user verifies.
     public var mainThreads: [T3Thread] { [thread] + handoffs }
 
     /// The thread with `id`, if it's part of the task.
     public func thread(withId id: String) -> T3Thread? {
-        allThreads.first { $0.id == id }
-    }
-
-    /// The most urgent status of every thread in the task.
-    public var status: T3ThreadStatus {
-        allThreads.map(T3ThreadStatus.of).min() ?? .idle
-    }
-
-    /// Sub-threads that are running or waiting on the user.
-    public var liveSubThreadCount: Int {
-        subThreads.filter { T3ThreadStatus.of($0) < .done }.count
+        indexById[id].map { allThreads[$0] }
     }
 
     /// Whether the task finished since the user last looked at it.
@@ -92,9 +99,14 @@ public struct T3TaskNode: Identifiable, Hashable, Sendable {
         (handoffs.last ?? thread).latestRunEndedEarly
     }
 
-    /// When any thread in the task last changed.
-    public var lastActivity: Date? {
-        allThreads.compactMap(\.updatedAt).max()
+    public static func == (lhs: T3TaskNode, rhs: T3TaskNode) -> Bool {
+        lhs.thread == rhs.thread && lhs.handoffs == rhs.handoffs && lhs.subThreads == rhs.subThreads
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(thread)
+        hasher.combine(handoffs)
+        hasher.combine(subThreads)
     }
 }
 

@@ -1834,7 +1834,7 @@ struct ContentView: View {
             tabManager: tabManager
         )
 
-        return AgentHomeWorkspaceArea(isActive: isAgentHomeActive, tabManager: tabManager, content: ZStack {
+        return AgentHomeWorkspaceArea(isActive: isAgentHomeActive, tabManager: tabManager, appearance: appearance, content: ZStack {
             ZStack {
                 ForEach(mountedWorkspaces) { tab in
                     let isSelectedWorkspace = selectedWorkspaceId == tab.id && !agentHomeHidesSelectedWorkspace

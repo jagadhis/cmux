@@ -59,9 +59,9 @@ import Testing
         #expect(snapshot.count(of: .needsYou) == 1)
         #expect(snapshot.count(of: .running) == 1)
         #expect(snapshot.count(of: .readyForReview) == 1)
-        #expect(snapshot.taskId(forShortcut: 1) == first.id)
-        #expect(snapshot.taskId(forShortcut: 3) == cockpit.id)
-        #expect(snapshot.taskId(forShortcut: 10) == nil)
+        #expect(snapshot.shortcutNumbers[first.id] == 1)
+        #expect(snapshot.shortcutNumbers[cockpit.id] == 3)
+        #expect(snapshot.shortcutNumbers.count == 5)
         #expect(snapshot.liveAgentCount == 2)
     }
 
@@ -78,7 +78,7 @@ import Testing
         #expect(snapshot.projects[0].rollupStatus == .needsYou)
         #expect(snapshot.count(of: .needsYou) == 1)
         #expect(snapshot.listedTasks.map(\.id) == [task.id])
-        #expect(snapshot.taskId(forShortcut: 1) == task.id)
+        #expect(snapshot.shortcutNumbers == [task.id: 1])
     }
 
     @Test func taskTotals() {

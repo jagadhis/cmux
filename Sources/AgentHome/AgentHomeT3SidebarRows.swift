@@ -43,10 +43,7 @@ struct AgentHomeT3TaskRow: View {
         .padding(.leading, 24)
         .padding(.horizontal, 9)
         .frame(height: 28)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
-        )
+        .agentHomeRowBackground(isSelected: isSelected, isHovered: isHovered)
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering } }
@@ -84,7 +81,7 @@ struct AgentHomeT3VerifyButton: View {
                         .font(.system(size: 11.5, weight: .semibold))
                 }
             }
-            .foregroundStyle(compact && !isHovered ? AgentHomePalette.done : .white)
+            .foregroundStyle(compact && !isHovered ? AgentHomePalette.done : AgentHomePalette.onFill)
             .padding(.horizontal, compact ? 5 : 10)
             .frame(height: compact ? 18 : 24)
             .background(
@@ -148,10 +145,7 @@ struct AgentHomeT3SubThreadRow: View {
             .padding(.horizontal, 9)
             .padding(.vertical, activity == nil ? 0 : 4)
             .frame(minHeight: 25)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
-            )
+            .agentHomeRowBackground(isSelected: isSelected, isHovered: isHovered)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -297,7 +291,7 @@ struct AgentHomeT3StatusDot: View {
                     Circle().fill(color).frame(width: 12, height: 12)
                     Image(systemName: endedEarly ? "exclamationmark" : "checkmark")
                         .font(.system(size: 7, weight: .heavy))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AgentHomePalette.onFill)
                 } else {
                     Circle().strokeBorder(color.opacity(0.85), lineWidth: 1.2).frame(width: 12, height: 12)
                     Image(systemName: endedEarly ? "exclamationmark" : "checkmark")

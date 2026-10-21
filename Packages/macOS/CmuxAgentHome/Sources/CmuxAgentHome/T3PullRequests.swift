@@ -126,7 +126,7 @@ extension T3Thread {
         }
 
         /// `owner/name#number`, lowercased like T3's keys.
-        public var key: String { "\(repository.lowercased())#\(number)" }
+        public var key: String { GitHubPullRequestRef.key(repository: repository, number: number) }
 
         public var status: State? { state.flatMap(State.init(rawValue:)) }
         public var checks: Checks? { checksState.flatMap(Checks.init(rawValue:)) }
@@ -152,7 +152,7 @@ extension T3Thread {
         ///
         /// - Parameter object: One entry of the payload's `pullRequests` array.
         /// - Returns: The link, or `nil` when it isn't one or is a dismissed stack member.
-        public static func fromPayload(_ object: [String: Any]) -> PullRequest? {
+        static func fromPayload(_ object: [String: Any]) -> PullRequest? {
             guard let repository = object["repository"] as? String,
                   let number = (object["number"] as? NSNumber)?.intValue
             else { return nil }
@@ -300,7 +300,7 @@ public enum T3PullRequestPanel {
         func parentKey(of pullRequest: T3Thread.PullRequest) -> String? {
             if let layerIndex = pullRequest.stackLayers.firstIndex(where: { $0.number == pullRequest.number }), layerIndex > 0 {
                 let below = pullRequest.stackLayers[layerIndex - 1]
-                let key = "\(pullRequest.repository.lowercased())#\(below.number)"
+                let key = GitHubPullRequestRef.key(repository: pullRequest.repository, number: below.number)
                 if byKey[key] != nil { return key }
             }
             guard let base = pullRequest.baseBranch else { return nil }
@@ -359,16 +359,5 @@ public enum T3PullRequestPanel {
 
     private static func latestLink(_ chain: T3PullRequestChain) -> Date {
         chain.entries.compactMap(\.pullRequest.linkedAt).max() ?? .distantPast
-    }
-}
-
-/// T3's ISO 8601 timestamps, with or without fractional seconds.
-enum T3Dates {
-    static func parse(_ text: String?) -> Date? {
-        guard let text else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: text) { return date }
-        return ISO8601DateFormatter().date(from: text)
     }
 }

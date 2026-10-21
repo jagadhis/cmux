@@ -16,6 +16,8 @@ final class AgentHomePullRequestDetailModel {
     struct Entry {
         var detail: GitHubPullRequestDetail?
         var files: [GitHubPullRequestFile]?
+        /// Each file's diff hash, by path, worked out once per load for the viewed marks.
+        var diffHashes: [String: String] = [:]
         var error: String?
         var filesError: String?
         var isLoading = false
@@ -23,6 +25,9 @@ final class AgentHomePullRequestDetailModel {
     }
 
     private(set) var entries: [String: Entry] = [:]
+    /// Pull request ids, least recently loaded first, so only the last few stay in memory.
+    private var entryOrder: [String] = []
+    private static let maximumEntries = 10
     /// Actions in flight, by pull request id.
     private(set) var pending: [String: String] = [:]
     /// The last action's outcome, by pull request id.
@@ -32,6 +37,7 @@ final class AgentHomePullRequestDetailModel {
     private var viewed: [String: [String: String]]
 
     private static let viewedDefaultsKey = "agentHomePullRequestViewedFiles"
+    private let gitHub = GitHubCLI()
 
     private init() {
         viewed = UserDefaults.standard.dictionary(forKey: Self.viewedDefaultsKey) as? [String: [String: String]] ?? [:]
@@ -46,30 +52,54 @@ final class AgentHomePullRequestDetailModel {
     func load(_ ref: GitHubPullRequestRef, force: Bool = false) {
         var entry = entries[ref.id] ?? Entry()
         guard !entry.isLoading else { return }
+        touch(ref.id)
         if !force, let loadedAt = entry.loadedAt, Date().timeIntervalSince(loadedAt) < 60, entry.detail != nil { return }
         entry.isLoading = true
         entries[ref.id] = entry
+        let gitHub = gitHub
         Task {
-            async let detail = Task.detached(priority: .userInitiated) { Self.fetchDetail(ref) }.value
-            async let files = Task.detached(priority: .userInitiated) { Self.fetchFiles(ref) }.value
+            async let detail = Self.fetchDetail(ref, gitHub: gitHub)
+            async let files = Self.fetchFiles(ref, gitHub: gitHub)
             let (detailResult, filesResult) = await (detail, files)
             var entry = entries[ref.id] ?? Entry()
             entry.isLoading = false
             entry.loadedAt = Date()
             switch detailResult {
-            case .success(let detail): entry.detail = detail; entry.error = nil
+            case .success(let detail):
+                entry.detail = detail
+                entry.error = nil
+                // Viewed marks only help while a pull request can still change.
+                if detail.state != .open, viewed[ref.id] != nil {
+                    viewed[ref.id] = nil
+                    UserDefaults.standard.set(viewed, forKey: Self.viewedDefaultsKey)
+                }
             case .failure(let error): entry.error = error.message
             }
             switch filesResult {
-            case .success(let files): entry.files = GitHubPullRequestFile.reviewOrder(files); entry.filesError = nil
+            case .success(let files):
+                entry.files = files.files
+                entry.diffHashes = files.hashes
+                entry.filesError = nil
             case .failure(let error): entry.filesError = error.message
             }
             entries[ref.id] = entry
         }
     }
 
-    nonisolated static func fetchDetail(_ ref: GitHubPullRequestRef) -> Result<GitHubPullRequestDetail, GitHubCLIError> {
-        let result = GitHubCLI.run([
+    /// Marks a pull request as just used and forgets the least recently used
+    /// ones past ``maximumEntries``, except any still loading.
+    private func touch(_ id: String) {
+        entryOrder.removeAll { $0 == id }
+        entryOrder.append(id)
+        while entryOrder.count > Self.maximumEntries,
+              let oldest = entryOrder.first(where: { entries[$0]?.isLoading != true }) {
+            entryOrder.removeAll { $0 == oldest }
+            entries[oldest] = nil
+        }
+    }
+
+    nonisolated static func fetchDetail(_ ref: GitHubPullRequestRef, gitHub: GitHubCLI) async -> Result<GitHubPullRequestDetail, GitHubCLIError> {
+        let result = await gitHub.run([
             "api", "graphql",
             "-F", "owner=\(ref.owner)", "-F", "name=\(ref.name)", "-F", "number=\(ref.number)",
             "-f", "query=\(GitHubPullRequestDetail.query)",
@@ -85,14 +115,26 @@ final class AgentHomePullRequestDetailModel {
         }
     }
 
-    nonisolated static func fetchFiles(_ ref: GitHubPullRequestRef) -> Result<[GitHubPullRequestFile], GitHubCLIError> {
-        let result = GitHubCLI.run(["api", "repos/\(ref.repository)/pulls/\(ref.number)/files?per_page=100", "--paginate", "--slurp"])
+    /// The changed files in review order, with each one's diff hash.
+    struct LoadedFiles: Sendable {
+        var files: [GitHubPullRequestFile]
+        var hashes: [String: String]
+    }
+
+    nonisolated static func fetchFiles(_ ref: GitHubPullRequestRef, gitHub: GitHubCLI) async -> Result<LoadedFiles, GitHubCLIError> {
+        let result = await gitHub.run(["api", "repos/\(ref.repository)/pulls/\(ref.number)/files?per_page=100", "--paginate", "--slurp"])
         switch result {
         case .success(let text):
             guard let pages = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[Any]] else {
                 return .failure(GitHubCLIError(message: String(localized: "agentHome.pr.filesFailed", defaultValue: "Couldn't read the changed files.")))
             }
-            return .success(pages.flatMap { $0 }.compactMap { ($0 as? [String: Any]).flatMap(GitHubPullRequestFile.fromREST) })
+            let files = GitHubPullRequestFile.reviewOrder(
+                pages.flatMap { $0 }.compactMap { ($0 as? [String: Any]).flatMap(GitHubPullRequestFile.fromREST) }
+            )
+            return .success(LoadedFiles(
+                files: files,
+                hashes: Dictionary(files.map { ($0.path, hash($0)) }, uniquingKeysWith: { first, _ in first })
+            ))
         case .failure(let error):
             return .failure(error)
         }
@@ -104,12 +146,12 @@ final class AgentHomePullRequestDetailModel {
 
     func viewedState(of file: GitHubPullRequestFile, in ref: GitHubPullRequestRef) -> ViewedState {
         guard let seen = viewed[ref.id]?[file.path] else { return .unviewed }
-        return seen == Self.hash(file) ? .viewed : .changedSinceViewed
+        return seen == diffHash(of: file, in: ref) ? .viewed : .changedSinceViewed
     }
 
     func setViewed(_ isViewed: Bool, file: GitHubPullRequestFile, in ref: GitHubPullRequestRef) {
         var files = viewed[ref.id] ?? [:]
-        files[file.path] = isViewed ? Self.hash(file) : nil
+        files[file.path] = isViewed ? diffHash(of: file, in: ref) : nil
         viewed[ref.id] = files.isEmpty ? nil : files
         UserDefaults.standard.set(viewed, forKey: Self.viewedDefaultsKey)
     }
@@ -118,7 +160,12 @@ final class AgentHomePullRequestDetailModel {
         files.filter { viewedState(of: $0, in: ref) == .viewed }.count
     }
 
-    private static func hash(_ file: GitHubPullRequestFile) -> String {
+    /// The file's diff hash from its load, hashing it only if it isn't there.
+    private func diffHash(of file: GitHubPullRequestFile, in ref: GitHubPullRequestRef) -> String {
+        entries[ref.id]?.diffHashes[file.path] ?? Self.hash(file)
+    }
+
+    nonisolated private static func hash(_ file: GitHubPullRequestFile) -> String {
         let digest = SHA256.hash(data: Data((file.patch ?? "\(file.additions)/\(file.deletions)").utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
@@ -141,7 +188,7 @@ final class AgentHomePullRequestDetailModel {
         outcomes[ref.id] = nil
         let arguments = Self.arguments(for: action, ref: ref)
         Task {
-            let result = await Task.detached(priority: .userInitiated) { GitHubCLI.run(arguments) }.value
+            let result = await gitHub.run(arguments, changesGitHub: true)
             pending[ref.id] = nil
             switch result {
             case .success:

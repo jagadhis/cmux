@@ -2,100 +2,66 @@ import CMUXAgentLaunch
 import CmuxAgentHome
 import Foundation
 
-/// What the Feed knows about one agent terminal, for its Agent Home card.
-struct AgentHomeFeedSignals: Equatable {
-    var pendingPermission: AgentHomePermissionRequest?
-    var currentActivity: String?
-    var plan: [AgentHomePlanStep] = []
-    var lastSummary: String?
-    /// The current session's first prompt, as a card title.
-    var sessionTitle: String?
-    var startedAt: Date?
-    var lastActivityAt: Date?
-    /// The files the current session wrote, working-memory notes included.
-    var editedFiles = AgentSessionFileLog()
-}
-
-/// Folds Feed items into per-terminal signals.
+/// Maps Feed items to the events Agent Home's fold reads.
 ///
-/// Items reach a terminal through their workstream's resolved target, so the
-/// result is keyed by surface (panel) id, uppercased to match `UUID.uuidString`.
+/// Items reach a terminal through their workstream's resolved target, so each
+/// event is keyed by surface (panel) id, uppercased to match `UUID.uuidString`.
+/// Items whose workstream isn't resolved yet are left out.
 enum AgentHomeFeedIndex {
-    static func signals(
+    static func events(
         items: [WorkstreamItem],
         targets: [String: FeedJumpResolver.Target]
-    ) -> [String: AgentHomeFeedSignals] {
-        var result: [String: AgentHomeFeedSignals] = [:]
-        for item in items.sorted(by: { $0.createdAt < $1.createdAt }) {
-            guard let target = targets[item.workstreamId] else { continue }
-            let key = target.surfaceId.uppercased()
-            var signals = result[key] ?? AgentHomeFeedSignals()
-            signals.startedAt = signals.startedAt ?? item.createdAt
-            signals.lastActivityAt = max(signals.lastActivityAt ?? item.updatedAt, item.updatedAt)
-
-            switch item.payload {
-            case let .permissionRequest(requestId, toolName, toolInputJSON, _):
-                if item.status.isPending {
-                    signals.pendingPermission = AgentHomePermissionRequest(
-                        requestId: requestId,
-                        toolName: toolName,
-                        summary: AgentHomePermissionSummary.summary(
-                            toolName: toolName,
-                            toolInputJSON: toolInputJSON,
-                            workingDirectory: item.cwd
-                        ),
-                        canAlwaysAllow: FeedPermissionActionPolicy.supportsAlwaysPermissionMode(
-                            source: item.source,
-                            toolInputJSON: toolInputJSON
-                        )
-                    )
-                } else if signals.pendingPermission?.requestId == requestId {
-                    signals.pendingPermission = nil
-                }
-            case let .toolUse(toolName, toolInputJSON):
-                if toolName == "TodoWrite" {
-                    let steps = AgentHomePlanParser.steps(fromToolInputJSON: toolInputJSON)
-                    if !steps.isEmpty { signals.plan = steps }
-                }
-                signals.currentActivity = AgentActivityDescriber.describe(
-                    toolName: toolName,
-                    toolInputJSON: toolInputJSON,
-                    workingDirectory: item.cwd
-                )
-                signals.editedFiles.record(
-                    toolName: toolName,
-                    toolInputJSON: toolInputJSON,
-                    workingDirectory: item.cwd,
-                    at: item.createdAt
-                )
-            case let .todos(todos):
-                signals.plan = todos.map { todo in
-                    let status: AgentHomePlanStep.Status
-                    switch todo.state {
-                    case .completed: status = .completed
-                    case .inProgress: status = .inProgress
-                    case .pending: status = .pending
-                    }
-                    return AgentHomePlanStep(title: todo.content, status: status)
-                }
-            case let .userPrompt(text):
-                if signals.sessionTitle == nil { signals.sessionTitle = AgentHomeText.title(fromPrompt: text) }
-                signals.currentActivity = String(localized: "agentHome.activity.readingPrompt", defaultValue: "Reading your message")
-            case let .assistantMessage(text):
-                if let summary = AgentHomeText.summary(fromMarkdown: text) { signals.lastSummary = summary }
-            case let .stop(reason):
-                signals.currentActivity = nil
-                if let reason, let summary = AgentHomeText.summary(fromMarkdown: reason) { signals.lastSummary = summary }
-            case .sessionEnd:
-                signals.currentActivity = nil
-            case .sessionStart:
-                // A new session in the same terminal starts a fresh card.
-                signals = AgentHomeFeedSignals(startedAt: item.createdAt, lastActivityAt: item.updatedAt)
-            case .toolResult, .exitPlan, .question:
-                break
-            }
-            result[key] = signals
+    ) -> [AgentHomeFeedEvent] {
+        items.compactMap { item in
+            guard let target = targets[item.workstreamId] else { return nil }
+            return AgentHomeFeedEvent(
+                terminalKey: target.surfaceId.uppercased(),
+                createdAt: item.createdAt,
+                updatedAt: item.updatedAt,
+                workingDirectory: item.cwd,
+                payload: payload(for: item)
+            )
         }
-        return result
+    }
+
+    private static func payload(for item: WorkstreamItem) -> AgentHomeFeedEvent.Payload {
+        switch item.payload {
+        case let .permissionRequest(requestId, toolName, toolInputJSON, _):
+            let isPending = item.status.isPending
+            return .permissionRequest(
+                requestId: requestId,
+                toolName: toolName,
+                toolInputJSON: toolInputJSON,
+                isPending: isPending,
+                canAlwaysAllow: isPending && FeedPermissionActionPolicy.supportsAlwaysPermissionMode(
+                    source: item.source,
+                    toolInputJSON: toolInputJSON
+                )
+            )
+        case let .toolUse(toolName, toolInputJSON):
+            return .toolUse(toolName: toolName, toolInputJSON: toolInputJSON)
+        case let .todos(todos):
+            return .plan(todos.map { todo in
+                let status: AgentHomePlanStep.Status
+                switch todo.state {
+                case .completed: status = .completed
+                case .inProgress: status = .inProgress
+                case .pending: status = .pending
+                }
+                return AgentHomePlanStep(title: todo.content, status: status)
+            })
+        case let .userPrompt(text):
+            return .userPrompt(text)
+        case let .assistantMessage(text):
+            return .assistantMessage(text)
+        case let .stop(reason):
+            return .stop(reason: reason)
+        case .sessionEnd:
+            return .sessionEnd
+        case .sessionStart:
+            return .sessionStart
+        case .toolResult, .exitPlan, .question:
+            return .other
+        }
     }
 }

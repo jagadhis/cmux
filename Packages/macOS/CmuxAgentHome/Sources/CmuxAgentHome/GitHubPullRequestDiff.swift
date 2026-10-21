@@ -16,10 +16,21 @@ public struct GitHubPullRequestFile: Identifiable, Hashable, Sendable {
     public var deletions: Int
     /// The unified diff, without file headers. GitHub leaves it out for
     /// binary files and very large diffs.
-    public var patch: String?
+    public let patch: String?
+    /// The diff, split into hunks once when the file is made. Empty when GitHub didn't include one.
+    public let hunks: [GitHubDiffHunk]
 
     public var id: String { path }
 
+    /// Creates a changed file, parsing its patch into ``hunks``.
+    ///
+    /// - Parameters:
+    ///   - path: The file's path in the head commit.
+    ///   - previousPath: The path before a rename.
+    ///   - status: How the pull request changes the file.
+    ///   - additions: Lines added.
+    ///   - deletions: Lines deleted.
+    ///   - patch: The unified diff, if GitHub sent one.
     public init(path: String, previousPath: String? = nil, status: Status, additions: Int, deletions: Int, patch: String?) {
         self.path = path
         self.previousPath = previousPath
@@ -27,10 +38,18 @@ public struct GitHubPullRequestFile: Identifiable, Hashable, Sendable {
         self.additions = additions
         self.deletions = deletions
         self.patch = patch
+        hunks = patch.map(GitHubDiffHunk.parse) ?? []
     }
 
-    /// The diff, split into hunks. Empty when GitHub didn't include one.
-    public var hunks: [GitHubDiffHunk] { patch.map(GitHubDiffHunk.parse) ?? [] }
+    public static func == (lhs: GitHubPullRequestFile, rhs: GitHubPullRequestFile) -> Bool {
+        lhs.path == rhs.path && lhs.previousPath == rhs.previousPath && lhs.status == rhs.status
+            && lhs.additions == rhs.additions && lhs.deletions == rhs.deletions && lhs.patch == rhs.patch
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(path)
+        hasher.combine(patch)
+    }
 
     /// Reads one entry of the REST files list.
     public static func fromREST(_ object: [String: Any]) -> GitHubPullRequestFile? {

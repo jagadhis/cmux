@@ -24,4 +24,18 @@ import Testing
         let terminalChat = try #require(URL(string: "http://127.0.0.1:7739/tok/s/t-abc?via=link&thread=x"))
         #expect(T3ChatLinks.linkedThreadId(in: terminalChat) == nil)
     }
+
+    @Test func chatURLNamesItsThread() throws {
+        // The sidecar's T3 session ids are `t3-` plus the thread id in base64url.
+        let threadId = "thread:project:abc:1f2e"
+        let encoded = Data(threadId.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let url = try #require(URL(string: "http://127.0.0.1:4100/tok123/s/t3-\(encoded)?transparent=1"))
+        #expect(T3ChatLinks.threadId(fromChatURL: url) == threadId)
+        #expect(T3ChatLinks.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/tok123/t3/new?project=p1"))) == nil)
+        #expect(T3ChatLinks.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/tok123/s/t-abc"))) == nil)
+        #expect(T3ChatLinks.threadId(fromChatURL: try #require(URL(string: "http://127.0.0.1:4100/s/t3-%%%"))) == nil)
+    }
 }

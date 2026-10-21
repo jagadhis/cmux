@@ -242,9 +242,6 @@ public struct AgentHomePullRequest: Hashable, Sendable {
         self.state = state
         self.checks = checks
     }
-
-    /// The number of checks that passed.
-    public var passedCheckCount: Int { checks.filter { $0.outcome == .passed }.count }
 }
 
 /// A changed file in a task's working tree.

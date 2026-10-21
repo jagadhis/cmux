@@ -6,7 +6,7 @@ public enum GitHubRepositoryMatcher {
     ///
     /// Handles `https://github.com/owner/name(.git)`, `git@github.com:owner/name(.git)`
     /// and `ssh://git@github.com/owner/name`.
-    public static func repository(fromRemoteURL url: String) -> String? {
+    static func repository(fromRemoteURL url: String) -> String? {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let range = trimmed.range(of: "github.com") else { return nil }
         var path = String(trimmed[range.upperBound...])

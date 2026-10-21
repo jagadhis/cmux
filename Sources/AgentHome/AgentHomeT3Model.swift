@@ -28,6 +28,10 @@ final class AgentHomeT3Model {
     /// Every T3 project by name, including ones with no open work, for New chat.
     private(set) var allProjects: [T3CodeStateReader.Project] = []
 
+    /// The files each session wrote, by thread id, as the task overview last
+    /// read them. Kept here so switching tasks shows them at once.
+    private(set) var sessionFilesByThread: [String: [AgentSessionFile]] = [:]
+
     /// The thread each T3 workspace's chat shows, by workspace id.
     private(set) var shownThreadIds: [UUID: String] = [:]
 
@@ -37,6 +41,12 @@ final class AgentHomeT3Model {
     private var lastVerifiedThreadIds: [String] = []
     /// A T3 command that failed, for the sidebar's toast.
     private(set) var lastError: String?
+
+    /// Every listed task by the id of each of its threads, rebuilt with ``projects``.
+    private var tasksByThreadId: [String: T3TaskNode] = [:]
+
+    /// Reads T3 every few seconds while Agent Home is on screen.
+    @ObservationIgnored let poller = AgentHomePoller(interval: AgentHomeT3Model.refreshInterval)
 
     /// The workspace each opened task lives in, by root thread id.
     private var taskLinks: [String: UUID]
@@ -51,12 +61,24 @@ final class AgentHomeT3Model {
     private var lastVerifyAt = Date.distantPast
     /// New chat panes waiting for T3 to start their thread, by workspace id.
     private var newChatWatchers: [UUID: AnyCancellable] = [:]
-    private var refreshTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     /// Which thread launched which (handoffs), saved between launches because
-    /// the first read of T3's history takes seconds.
-    private var launchIndex: T3LaunchIndex
+    /// the first read of T3's history takes seconds. Loaded off the main
+    /// thread by the first read.
+    private var launchIndex = T3LaunchIndex()
+    private var hasLoadedLaunchIndex = false
     private var isScanningLaunches = false
+    /// One read at a time: a call while one runs reads again once it's done,
+    /// so results publish in order and never go back to an older state.
+    private var isReloading = false
+    private var reloadAgain = false
+    /// Set when a read must not be skipped as unchanged.
+    private var forceNextRead = false
+    /// Bumped when cmux changes T3 (settle, visit), so a read that started
+    /// before the change finished is dropped instead of flashing old state.
+    private var changeGeneration = 0
+    /// What the last successful read covered, to skip reads while T3's database is untouched.
+    private var lastRead: (key: ReadKey, stamp: T3CodeStateReader.ChangeStamp, at: Date)?
     /// Watches each T3 workspace's chat for thread links, by workspace id.
     private var chatWatchers: [UUID: (panel: ObjectIdentifier, cancellable: AnyCancellable)] = [:]
     /// The chat panel Agent Home added to each workspace, by workspace id.
@@ -64,11 +86,14 @@ final class AgentHomeT3Model {
 
     private static let linksDefaultsKey = "agentHomeT3TaskWorkspaces"
     private static let refreshInterval: Duration = .seconds(3)
+    /// Reads that look unchanged still happen this often: what's listed also
+    /// depends on the time (snoozes ending, the recent-task window).
+    private static let maximumSkippedReadAge: TimeInterval = 60
 
     private init() {
         let stored = UserDefaults.standard.dictionary(forKey: Self.linksDefaultsKey) as? [String: String] ?? [:]
         taskLinks = stored.compactMapValues(UUID.init(uuidString:))
-        launchIndex = (try? Data(contentsOf: Self.launchIndexURL)).flatMap { try? JSONDecoder().decode(T3LaunchIndex.self, from: $0) } ?? T3LaunchIndex()
+        poller.action = { [weak self] in await self?.reload() }
     }
 
     private static var launchIndexURL: URL {
@@ -80,48 +105,149 @@ final class AgentHomeT3Model {
 
     // MARK: - Reading T3
 
-    /// Starts reading T3's database every few seconds. Safe to call repeatedly.
-    func startIfNeeded(tabManager: TabManager) {
+    /// Remembers the window's tab manager for reads and links. Views showing
+    /// T3 tasks call this and hold ``poller`` while they're on screen.
+    func use(tabManager: TabManager) {
         self.tabManager = tabManager
-        guard refreshTask == nil else { return }
-        refreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.reload()
-                try? await Task.sleep(for: Self.refreshInterval)
+    }
+
+    /// Reads T3's database now, unless it hasn't changed since the last read.
+    ///
+    /// One read runs at a time; a call while one runs reads again once it's
+    /// done, so results always publish newest last.
+    ///
+    /// - Parameter force: Read even if the database looks unchanged.
+    func reload(force: Bool = false) async {
+        if force { forceNextRead = true }
+        guard !isReloading else {
+            reloadAgain = true
+            return
+        }
+        isReloading = true
+        defer { isReloading = false }
+        repeat {
+            reloadAgain = false
+            await readOnce()
+        } while reloadAgain
+    }
+
+    /// cmux changed something in T3: drop any read already under way and read again.
+    private func t3DidChange() async {
+        changeGeneration += 1
+        await reload(force: true)
+    }
+
+    /// What a read covers besides the database itself.
+    private struct ReadKey: Equatable {
+        var openTaskIds: Set<String>
+        var includedThreadIds: Set<String>
+    }
+
+    private enum ReadOutcome {
+        case missing
+        case unchanged
+        case failed(String)
+        case read(tree: [T3ProjectNode], projects: [T3CodeStateReader.Project]?, index: T3LaunchIndex, stamp: T3CodeStateReader.ChangeStamp)
+    }
+
+    private func readOnce() async {
+        if !hasLoadedLaunchIndex {
+            hasLoadedLaunchIndex = true
+            let url = Self.launchIndexURL
+            let loaded = await Task.detached(priority: .utility) {
+                (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(T3LaunchIndex.self, from: $0) }
+            }.value
+            if let loaded, loaded.isAhead(of: launchIndex) || !launchIndex.hasScanned { launchIndex = loaded }
+        }
+        pruneLinks()
+        newChatWatchers = newChatWatchers.filter { id, _ in workspaceExists(id) }
+        let openTaskIds = Set(taskLinks.compactMap { id, workspace in workspaceExists(workspace) ? id : nil })
+        // An open task's handoffs stay readable after they're settled, like its sub-threads.
+        let openMainThreadIds = Set(allTasks.filter { openTaskIds.contains($0.id) }.flatMap { $0.mainThreads.map(\.id) })
+        let key = ReadKey(openTaskIds: openTaskIds, includedThreadIds: openMainThreadIds)
+        let force = forceNextRead
+        forceNextRead = false
+        let previous = lastRead
+        let generation = changeGeneration
+        let index = launchIndex
+        let maximumAge = Self.maximumSkippedReadAge
+        let outcome = await Task.detached(priority: .utility) { () -> ReadOutcome in
+            let reader = T3CodeStateReader()
+            guard FileManager.default.fileExists(atPath: reader.databaseURL.path) else { return .missing }
+            let stamp = reader.changeStamp()
+            if !force, let previous, previous.key == key, previous.stamp == stamp,
+               Date().timeIntervalSince(previous.at) < maximumAge {
+                return .unchanged
             }
+            do {
+                return try reader.withConnection { connection in
+                    var index = index
+                    // New launches since the last read take milliseconds; a full read of the history runs separately.
+                    if index.hasScanned { try? connection.updateLaunchIndex(&index, allowsFullRead: false) }
+                    let threads = try Self.readThreads(connection, openTaskIds: openTaskIds, index: index, includingThreadIds: openMainThreadIds)
+                    return .read(tree: T3ThreadTree.build(threads), projects: try? connection.projects(), index: index, stamp: stamp)
+                }
+            } catch {
+                return .failed(String(describing: error))
+            }
+        }.value
+        // cmux changed T3 while this read ran; its result may predate the change.
+        guard generation == changeGeneration else {
+            forceNextRead = true
+            reloadAgain = true
+            return
+        }
+        switch outcome {
+        case .missing, .unchanged:
+            return
+        case .failed(let message):
+            // Keep showing the last good read; the next poll tries again.
+            #if DEBUG
+            cmuxDebugLog("agentHome.t3.readFailed \(message)")
+            #endif
+            return
+        case .read(let built, let all, let updatedIndex, let stamp):
+            lastRead = (key, stamp, Date())
+            if updatedIndex.isAhead(of: launchIndex) { setLaunchIndex(updatedIndex) }
+            if !launchIndex.hasScanned { scanLaunchHistory() }
+            if let all, all != allProjects { allProjects = all }
+            readProjects = built
+            relinkRegroupedTasks(built)
+            // Stop hiding a verified task once T3 shows it settled or no longer lists it.
+            let listed = Dictionary(built.flatMap { $0.recentTasks + $0.olderTasks }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            verifying = verifying.filter { listed[$0].map { !Self.isSettled($0) } ?? false }
+            publish()
+            if let tabManager { watchChats(tabManager: tabManager) }
         }
     }
 
-    /// Reads T3's database now.
-    func reload() async {
-        newChatWatchers = newChatWatchers.filter { id, _ in tabManager?.tabs.contains { $0.id == id } == true }
-        let openTaskIds = Set(taskLinks.compactMap { id, workspace in
-            tabManager?.tabs.contains { $0.id == workspace } == true ? id : nil
-        })
-        // An open task's handoffs stay readable after they're settled, like its sub-threads.
-        let openMainThreadIds = Set(allTasks.filter { openTaskIds.contains($0.id) }.flatMap { $0.mainThreads.map(\.id) })
-        let index = launchIndex
-        let read = await Task.detached(priority: .utility) { () -> ([T3ProjectNode], [T3CodeStateReader.Project], T3LaunchIndex)? in
-            let reader = T3CodeStateReader()
-            guard FileManager.default.fileExists(atPath: reader.databaseURL.path) else { return nil }
-            var index = index
-            // New launches since the last read take milliseconds; a full read of the history runs separately.
-            if index.hasScanned { try? reader.updateLaunchIndex(&index, allowsFullRead: false) }
-            guard let threads = Self.readThreads(reader, openTaskIds: openTaskIds, index: index, includingThreadIds: openMainThreadIds)
-            else { return nil }
-            return (T3ThreadTree.build(threads), (try? reader.projects()) ?? [], index)
-        }.value
-        guard let (built, all, updatedIndex) = read else { return }
-        if updatedIndex.isAhead(of: launchIndex) { setLaunchIndex(updatedIndex) }
-        if !launchIndex.hasScanned { scanLaunchHistory() }
-        if all != allProjects { allProjects = all }
-        readProjects = built
-        relinkRegroupedTasks(built)
-        // Stop hiding a verified task once T3 shows it settled or no longer lists it.
-        let listed = Dictionary(built.flatMap { $0.recentTasks + $0.olderTasks }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        verifying = verifying.filter { listed[$0].map { !Self.isSettled($0) } ?? false }
-        publish()
-        if let tabManager { watchChats(tabManager: tabManager) }
+    /// Whether a workspace is open in any window.
+    private func workspaceExists(_ workspaceId: UUID) -> Bool {
+        if tabManager?.tabs.contains(where: { $0.id == workspaceId }) == true { return true }
+        return AppDelegate.shared?.tabManagerFor(tabId: workspaceId) != nil
+    }
+
+    /// Forgets per-workspace chat state for workspaces that were closed, once
+    /// session restore has put every window's workspaces back (before that, a
+    /// restored workspace would look closed).
+    ///
+    /// Task links stay: a closed workspace can come back with the same id
+    /// (Reopen Closed Workspace, a later session restore), and reads already
+    /// skip links whose workspace isn't open.
+    private func pruneLinks() {
+        guard AppDelegate.shared?.didCompleteInitialSessionRestore == true else { return }
+        let gone = Set(shownThreadIds.keys.filter { !workspaceExists($0) })
+            .union(chatPanelIds.keys.filter { !workspaceExists($0) })
+            .union(chatWatchers.keys.filter { !workspaceExists($0) })
+        for workspaceId in gone {
+            shownThreadIds[workspaceId] = nil
+            chatPanelIds[workspaceId] = nil
+            chatWatchers[workspaceId] = nil
+        }
+    }
+
+    private func saveLinks() {
+        UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
     }
 
     /// A task opened on its own can become a handoff in another task once its
@@ -136,25 +262,32 @@ final class AgentHomeT3Model {
             taskLinks[task.id] = workspaceId
             changed = true
         }
-        if changed { UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey) }
+        if changed { saveLinks() }
     }
 
     /// Reads the listed threads with their launchers, plus the settled threads
     /// they were handed off from, so a handoff stays under the thread that started it.
     nonisolated private static func readThreads(
-        _ reader: T3CodeStateReader,
+        _ connection: T3CodeStateReader.Connection,
         openTaskIds: Set<String>,
         index: T3LaunchIndex,
         includingThreadIds: Set<String> = []
-    ) -> [T3Thread]? {
-        guard var threads = try? reader.activeThreads(openTaskIds: openTaskIds, includingThreadIds: includingThreadIds) else { return nil }
-        threads = index.applied(to: threads)
+    ) throws -> [T3Thread] {
+        var threads = index.applied(to: try connection.activeThreads(openTaskIds: openTaskIds, includingThreadIds: includingThreadIds))
         let missing = T3ThreadTree.missingLaunchers(of: threads, index: index)
         if !missing.isEmpty,
-           let more = try? reader.activeThreads(openTaskIds: openTaskIds, includingThreadIds: includingThreadIds.union(missing)) {
+           let more = try? connection.activeThreads(openTaskIds: openTaskIds, includingThreadIds: includingThreadIds.union(missing)) {
             threads = index.applied(to: more)
         }
         return threads
+    }
+
+    /// Reads the threads of one task that may not be listed (a settled task), off the main thread.
+    nonisolated private static func readTask(containing threadId: String, openTaskIds: Set<String>, includingThreadIds: Set<String> = [], index: T3LaunchIndex) -> T3TaskNode? {
+        let threads = (try? T3CodeStateReader().withConnection { connection in
+            try readThreads(connection, openTaskIds: openTaskIds, index: index, includingThreadIds: includingThreadIds)
+        }) ?? []
+        return T3ThreadTree.build(threads).flatMap { $0.recentTasks + $0.olderTasks }.first { $0.thread(withId: threadId) != nil }
     }
 
     /// Reads every thread launch in T3's history once, in the background, then regroups.
@@ -170,7 +303,7 @@ final class AgentHomeT3Model {
             isScanningLaunches = false
             guard let scanned, scanned.isAhead(of: launchIndex) else { return }
             setLaunchIndex(scanned)
-            await reload()
+            await reload(force: true)
         }
     }
 
@@ -200,7 +333,21 @@ final class AgentHomeT3Model {
             project.olderTasks = project.olderTasks.filter(keep)
             return project.recentTasks.isEmpty && project.olderTasks.isEmpty ? nil : project
         }
-        if visible != projects { projects = visible }
+        guard visible != projects else { return }
+        projects = visible
+        var byThread: [String: T3TaskNode] = [:]
+        for task in visible.flatMap({ $0.recentTasks + $0.olderTasks }) {
+            for thread in task.allThreads where byThread[thread.id] == nil { byThread[thread.id] = task }
+        }
+        tasksByThreadId = byThread
+    }
+
+    /// Stores the files an overview read for its sessions; a thread missing
+    /// from `files` wrote nothing. Drops threads no longer listed.
+    func setSessionFiles(_ files: [String: [AgentSessionFile]], forThreads threadIds: [String]) {
+        var updated = sessionFilesByThread.filter { tasksByThreadId[$0.key] != nil }
+        for id in threadIds { updated[id] = files[id] ?? [] }
+        if updated != sessionFilesByThread { sessionFilesByThread = updated }
     }
 
     // MARK: - Lookups
@@ -208,7 +355,7 @@ final class AgentHomeT3Model {
     /// The task an open workspace shows, if it's a T3 task.
     func task(forWorkspace workspaceId: UUID) -> T3TaskNode? {
         guard let taskId = taskLinks.first(where: { $0.value == workspaceId })?.key else { return nil }
-        return allTasks.first { $0.id == taskId } ?? allTasks.first { $0.thread(withId: taskId) != nil }
+        return tasksByThreadId[taskId]
     }
 
     /// The workspace a task is open in, if it still exists.
@@ -240,10 +387,7 @@ final class AgentHomeT3Model {
 
     /// Any listed thread, in any task.
     func thread(withId id: String) -> T3Thread? {
-        for task in allTasks {
-            if let thread = task.thread(withId: id) { return thread }
-        }
-        return nil
+        tasksByThreadId[id]?.thread(withId: id)
     }
 
     // MARK: - Opening
@@ -300,7 +444,7 @@ final class AgentHomeT3Model {
     private func link(_ taskId: String, toWorkspace workspaceId: UUID, showing threadId: String) {
         taskLinks[taskId] = workspaceId
         shownThreadIds[workspaceId] = threadId
-        UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
+        saveLinks()
     }
 
     /// Puts the thread's chat to the left of the workspace's terminal.
@@ -394,16 +538,15 @@ final class AgentHomeT3Model {
 
     /// Opens any T3 thread in its task, reading it from T3 when it isn't listed.
     func openThread(id threadId: String, tabManager: TabManager) {
-        if let task = allTasks.first(where: { $0.thread(withId: threadId) != nil }) {
+        if let task = tasksByThreadId[threadId] {
             let thread = task.thread(withId: threadId)
             open(task, thread: thread == task.thread ? nil : thread, tabManager: tabManager)
             return
         }
         let index = launchIndex
         Task {
-            let task = await Task.detached(priority: .userInitiated) { () -> T3TaskNode? in
-                let threads = Self.readThreads(T3CodeStateReader(), openTaskIds: [threadId], index: index, includingThreadIds: [threadId]) ?? []
-                return T3ThreadTree.build(threads).flatMap { $0.recentTasks + $0.olderTasks }.first { $0.thread(withId: threadId) != nil }
+            let task = await Task.detached(priority: .userInitiated) {
+                Self.readTask(containing: threadId, openTaskIds: [threadId], includingThreadIds: [threadId], index: index)
             }.value
             guard let task else { NSSound.beep(); return }
             let thread = task.thread(withId: threadId)
@@ -412,6 +555,14 @@ final class AgentHomeT3Model {
     }
 
     /// The sidecar's base URL with its token, ending in "/", starting the sidecar if needed.
+    /// Where the sidecar is configured to listen, without starting or checking it.
+    private func configuredSidecarBase(tabManager: TabManager) -> String? {
+        guard CmuxFeatureFlags.shared.isAgentChatUIEnabled, BrowserAvailabilitySettings.isEnabled() else { return nil }
+        let agentChat = AppDelegate.shared?.mainWindowContext(for: tabManager)?.cmuxConfigStore?.agentChat ?? .default
+        let string = agentChat.url.absoluteString
+        return string.hasSuffix("/") ? string : string + "/"
+    }
+
     private func sidecarBase(tabManager: TabManager) async -> String? {
         guard let base = await AppDelegate.shared?.agentChatBrowserBaseURL(tabManager: tabManager, preferredWindow: NSApp.keyWindow) else {
             return knownSidecarBase
@@ -428,12 +579,11 @@ final class AgentHomeT3Model {
             open(task, thread: thread == task.thread ? nil : thread, tabManager: tabManager)
         }
         // The task may be part of another task's handoff chain by now.
-        if let task = allTasks.first(where: { $0.id == taskId || $0.thread(withId: taskId) != nil }) { return show(task) }
+        if let task = tasksByThreadId[taskId] { return show(task) }
         let index = launchIndex
         Task {
-            let task = await Task.detached(priority: .userInitiated) { () -> T3TaskNode? in
-                let threads = Self.readThreads(T3CodeStateReader(), openTaskIds: [taskId], index: index) ?? []
-                return T3ThreadTree.build(threads).flatMap { $0.recentTasks + $0.olderTasks }.first { $0.thread(withId: taskId) != nil }
+            let task = await Task.detached(priority: .userInitiated) {
+                Self.readTask(containing: taskId, openTaskIds: [taskId], index: index)
             }.value
             if let task { show(task) } else { NSSound.beep() }
         }
@@ -470,7 +620,7 @@ final class AgentHomeT3Model {
             shownThreadIds[workspaceId] = nil
             chatWatchers[workspaceId] = nil
             chatPanelIds[workspaceId] = nil
-            UserDefaults.standard.set(taskLinks.mapValues(\.uuidString), forKey: Self.linksDefaultsKey)
+            saveLinks()
         }
 
         Task {
@@ -483,7 +633,7 @@ final class AgentHomeT3Model {
                 publish()
                 showToast(error: error.localizedDescription)
             }
-            await reload()
+            await t3DidChange()
         }
     }
 
@@ -502,7 +652,7 @@ final class AgentHomeT3Model {
             } catch {
                 showToast(error: error.localizedDescription)
             }
-            await reload()
+            await t3DidChange()
         }
     }
 
@@ -510,7 +660,7 @@ final class AgentHomeT3Model {
     func markSeen(_ threadId: String, tabManager: TabManager) {
         Task {
             try? await threadAction(.visit, threadId: threadId, tabManager: tabManager)
-            await reload()
+            await t3DidChange()
         }
     }
 
@@ -564,11 +714,30 @@ final class AgentHomeT3Model {
     }
 
     /// Reads a sidecar API path such as `api/t3/usage?…`, looking the sidecar up again once if it moved.
-    func sidecarGET(_ path: String, tabManager: TabManager) async throws -> (Data, Int) {
+    ///
+    /// Starting the sidecar takes cmux's one-at-a-time sidecar lookup, which a
+    /// user's New chat or open needs, so background reads pass
+    /// `startsSidecar: false`: they try the sidecar at its known or configured
+    /// address without starting it, and throw ``NewChatError/sidecarNotStarted``
+    /// when nothing answers there.
+    func sidecarGET(_ path: String, tabManager: TabManager, startsSidecar: Bool) async throws -> (Data, Int) {
         func get(_ base: String?) async throws -> (Data, Int) {
             guard let base, let url = URL(string: base + path) else { throw NewChatError.sidecarUnavailable }
             let (data, response) = try await URLSession.shared.data(from: url)
             return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        guard startsSidecar else {
+            // A restored session's chats can have the sidecar running before any action here looked it up.
+            guard let base = knownSidecarBase ?? configuredSidecarBase(tabManager: tabManager) else { throw NewChatError.sidecarNotStarted }
+            do {
+                let response = try await get(base)
+                knownSidecarBase = base
+                return response
+            } catch is URLError {
+                // The sidecar went away; the next user action looks it up again.
+                self.knownSidecarBase = nil
+                throw NewChatError.sidecarNotStarted
+            }
         }
         do {
             let base: String? = if let knownSidecarBase { knownSidecarBase } else { await sidecarBase(tabManager: tabManager) }
@@ -587,11 +756,13 @@ final class AgentHomeT3Model {
 
     enum NewChatError: LocalizedError {
         case sidecarUnavailable
+        /// No user action has started the sidecar yet; background reads wait for one.
+        case sidecarNotStarted
         case rejected(String)
 
         var errorDescription: String? {
             switch self {
-            case .sidecarUnavailable:
+            case .sidecarUnavailable, .sidecarNotStarted:
                 return String(localized: "agentHome.newChat.sidecarUnavailable", defaultValue: "Agent Chat isn't running. Check the agentChat settings in cmux.json.")
             case .rejected(let message):
                 return message
@@ -642,7 +813,7 @@ final class AgentHomeT3Model {
         let workspaceId = workspace.id
         let chatId = chat.id
         newChatWatchers[workspaceId] = chat.$currentURL
-            .compactMap { $0.flatMap(T3Linking.threadId(fromChatURL:)) }
+            .compactMap { $0.flatMap(T3ChatLinks.threadId(fromChatURL:)) }
             .first()
             .sink { [weak self, weak tabManager] threadId in
                 guard let self, let tabManager else { return }
@@ -673,7 +844,7 @@ final class AgentHomeT3Model {
                 initialDividerPosition: 0.62
             )
         }
-        await reload()
+        await reload(force: true)
     }
 
     /// Reads a thread T3 has just started. T3 writes it to its database a

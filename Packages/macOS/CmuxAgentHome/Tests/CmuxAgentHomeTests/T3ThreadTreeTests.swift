@@ -29,6 +29,23 @@ import Testing
         #expect(T3ThreadStatus.of(thread("a", run: nil)) == .idle)
     }
 
+    @Test func taskWorksOutItsSummaryOnce() {
+        let task = T3TaskNode(
+            thread: thread("main", run: "completed", daysAgo: 3),
+            handoffs: [thread("handoff", run: "completed", daysAgo: 2, launchedBy: "main")],
+            subThreads: [thread("sub", parent: "main", run: "running", daysAgo: 1), thread("old", parent: "main", daysAgo: 5)]
+        )
+        #expect(task.allThreads.map(\.id) == ["main", "handoff", "sub", "old"])
+        #expect(task.mainThreads.map(\.id) == ["main", "handoff"])
+        #expect(task.status == .running)
+        #expect(task.lastActivity == now.addingTimeInterval(-86_400))
+        #expect(task.liveSubThreadCount == 1)
+        for id in ["main", "handoff", "sub", "old"] { #expect(task.thread(withId: id)?.id == id) }
+        #expect(task.thread(withId: "missing") == nil)
+        #expect(task == T3TaskNode(thread: task.thread, handoffs: task.handoffs, subThreads: task.subThreads))
+        #expect(task != T3TaskNode(thread: task.thread))
+    }
+
     @Test func finishedThreadsAreDoneUntilSettled() {
         #expect(T3ThreadStatus.of(thread("a", run: "completed")) == .done)
         #expect(T3ThreadStatus.of(thread("a", run: "failed")) == .done)

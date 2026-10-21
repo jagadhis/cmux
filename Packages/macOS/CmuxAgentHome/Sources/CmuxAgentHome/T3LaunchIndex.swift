@@ -10,7 +10,7 @@ import Foundation
 /// few milliseconds after the first read.
 public struct T3LaunchIndex: Hashable, Sendable, Codable {
     /// The launching thread, by launched thread id.
-    public private(set) var launcherByThreadId: [String: String] = [:]
+    private(set) var launcherByThreadId: [String: String] = [:]
     /// The last turn-item row read.
     var scannedThroughRowId: Int64 = 0
     /// Launch calls read before they finished, to read again.
@@ -127,8 +127,7 @@ public struct T3LaunchIndex: Hashable, Sendable, Codable {
             if !found.isEmpty { return found }
         }
         if let content = output["content"] as? String,
-           let data = content.data(using: .utf8),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+           let object = content.agentHomeJSONObject as? [String: Any] {
             return ids(in: object)
         }
         return []

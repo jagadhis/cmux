@@ -18,7 +18,7 @@ struct AgentHomePRCodeTab: View {
 
     var body: some View {
         if let files {
-            VStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
                     Text(String(localized: "agentHome.pr.files", defaultValue: "\(files.count) files")).fontWeight(.semibold)
                     Spacer()
@@ -45,10 +45,11 @@ struct AgentHomePRCodeTab: View {
                     }
                 }
 
+                let threadsByPath = Dictionary(grouping: detail.reviewThreads.filter { $0.line != nil }, by: \.path)
                 ForEach(files) { file in
                     AgentHomePRFileDiff(
                         file: file,
-                        threads: detail.reviewThreads.filter { $0.path == file.path && $0.line != nil },
+                        threads: threadsByPath[file.path] ?? [],
                         viewedState: model.viewedState(of: file, in: ref),
                         isCollapsed: collapsed.contains(file.path),
                         onToggleCollapsed: {
@@ -190,6 +191,7 @@ private struct AgentHomePRFileDiff: View {
         } else {
             let total = hunks.reduce(0) { $0 + $1.lines.count + 1 }
             let limit = showsAllLines ? Int.max : Self.initialLineLimit
+            let threadsByLine = Dictionary(grouping: threads, by: { $0.line ?? -1 })
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(visibleRows(hunks, limit: limit).enumerated()), id: \.offset) { _, row in
                     switch row {
@@ -203,7 +205,7 @@ private struct AgentHomePRFileDiff: View {
                             .background(AgentHomePalette.running.opacity(0.07))
                     case .line(let line):
                         AgentHomePRDiffLine(line: line)
-                        ForEach(threads.filter { $0.line == line.newNumber && line.kind != .deletion }) { thread in
+                        ForEach(line.kind == .deletion ? [] : line.newNumber.flatMap { threadsByLine[$0] } ?? []) { thread in
                             AgentHomePRThreadCard(thread: thread, showsPath: false, onLink: onLink)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
@@ -336,7 +338,7 @@ private struct AgentHomePRThreadCard: View {
                         HStack(spacing: 6) {
                             if let author = comment.author { AgentHomeAvatar(actor: author, size: 16) }
                             Text(comment.author?.login ?? "ghost").font(.system(size: 11.5, weight: .semibold))
-                            if let date = comment.createdAt { Text(AgentHomePRFormat.ago(date)).font(.system(size: 11)).foregroundStyle(.tertiary) }
+                            if let date = comment.createdAt { Text(AgentHomeFormat.relative(date)).font(.system(size: 11)).foregroundStyle(.tertiary) }
                         }
                         AgentHomeHTMLBlock(html: comment.bodyHTML, onLink: onLink)
                     }
@@ -345,7 +347,7 @@ private struct AgentHomePRThreadCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.03)))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
     }
 }

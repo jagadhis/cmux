@@ -10,7 +10,8 @@ import SwiftUI
 /// updated stands out while the agent works.
 struct AgentHomeSessionFilesCard<Accessory: View>: View {
     let title: String
-    let files: [AgentSessionFile]
+    /// The files, or `nil` while they're first being read.
+    let files: [AgentSessionFile]?
     /// The session's folder; paths inside it show relative to it.
     let root: String?
     let emptyText: String
@@ -23,7 +24,7 @@ struct AgentHomeSessionFilesCard<Accessory: View>: View {
 
     init(
         title: String,
-        files: [AgentSessionFile],
+        files: [AgentSessionFile]?,
         root: String?,
         emptyText: String,
         onOpen: @escaping (AgentSessionFile) -> Void,
@@ -38,6 +39,7 @@ struct AgentHomeSessionFilesCard<Accessory: View>: View {
     }
 
     var body: some View {
+        let files = self.files ?? []
         let groups = Dictionary(grouping: files, by: \.kind)
         let kinds = AgentSessionFile.Kind.allCases.filter { groups[$0]?.isEmpty == false }
         VStack(alignment: .leading, spacing: 9) {
@@ -48,11 +50,13 @@ struct AgentHomeSessionFilesCard<Accessory: View>: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 if files.isEmpty {
+                    // Kept invisible while loading, so the card doesn't say "nothing" and then fill in.
                     Text(emptyText)
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .opacity(self.files == nil ? 0 : 1)
                 } else {
                     // Re-render every 30 s so "just updated" marks and times fade.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -121,7 +125,7 @@ struct AgentHomeSessionFilesCard<Accessory: View>: View {
 
     static func tint(for kind: AgentSessionFile.Kind) -> Color {
         switch kind {
-        case .workingMemory: return Color(red: 0.62, green: 0.45, blue: 0.95)
+        case .workingMemory: return AgentHomePalette.purple
         case .plan: return AgentHomePalette.needsYou
         case .file: return .secondary
         }
@@ -139,7 +143,7 @@ struct AgentHomeSessionFilesCard<Accessory: View>: View {
 extension AgentHomeSessionFilesCard where Accessory == EmptyView {
     init(
         title: String,
-        files: [AgentSessionFile],
+        files: [AgentSessionFile]?,
         root: String?,
         emptyText: String,
         onOpen: @escaping (AgentSessionFile) -> Void

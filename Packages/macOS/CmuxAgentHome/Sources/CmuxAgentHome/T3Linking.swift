@@ -26,32 +26,6 @@ public struct T3LinkGroup: Hashable, Sendable {
     }
 }
 
-/// A cmux task (workspace) as T3 linking sees it.
-public struct T3LinkWorkspace: Hashable, Sendable {
-    /// The workspace id.
-    public var id: UUID
-    /// The workspace title.
-    public var title: String
-    /// The workspace group id.
-    public var groupId: UUID?
-    /// The working directory.
-    public var directory: String?
-
-    /// Creates a link workspace.
-    ///
-    /// - Parameters:
-    ///   - id: The workspace id.
-    ///   - title: The workspace title.
-    ///   - groupId: The workspace group id.
-    ///   - directory: The working directory.
-    public init(id: UUID, title: String, groupId: UUID? = nil, directory: String? = nil) {
-        self.id = id
-        self.title = title
-        self.groupId = groupId
-        self.directory = directory
-    }
-}
-
 /// Connects T3 projects and tasks to cmux projects and workspaces.
 public enum T3Linking {
     /// The external id Agent Home gives a group it creates for a T3 project.
@@ -60,24 +34,6 @@ public enum T3Linking {
     /// - Returns: The external id.
     public static func externalID(forProjectId projectId: String) -> String {
         "t3:\(projectId)"
-    }
-
-    /// The T3 thread an agent-chat page shows, read from its URL.
-    ///
-    /// The sidecar shows a T3 thread at `…/s/t3-<thread id in base64url>`.
-    /// A New chat pane moves there once T3 has started its thread.
-    ///
-    /// - Parameter url: The chat page's URL.
-    /// - Returns: The thread id, or `nil` when the page isn't a T3 thread's chat.
-    public static func threadId(fromChatURL url: URL) -> String? {
-        let parts = url.pathComponents
-        guard let index = parts.lastIndex(of: "s"), index + 1 < parts.count, parts[index + 1].hasPrefix("t3-") else { return nil }
-        var base64 = String(parts[index + 1].dropFirst(3))
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
-        guard let data = Data(base64Encoded: base64), let threadId = String(data: data, encoding: .utf8), !threadId.isEmpty else { return nil }
-        return threadId
     }
 
     /// The cmux project a T3 project belongs to.
@@ -106,42 +62,6 @@ public enum T3Linking {
         }
         let name = projectName.lowercased()
         return groups.first { $0.name.lowercased() == name }?.id
-    }
-
-    /// The workspace a T3 task is already open in, if any.
-    ///
-    /// A recorded link wins while its workspace still exists. Otherwise a
-    /// workspace in the same project with the task's title and directory counts.
-    ///
-    /// - Parameters:
-    ///   - proposal: The T3 task.
-    ///   - linkedWorkspaceId: The workspace recorded when the task was last opened.
-    ///   - groupId: The cmux project the task belongs to.
-    ///   - workspaces: The cmux workspaces.
-    /// - Returns: The workspace id, or `nil` when the task isn't open.
-    public static func openWorkspaceId(
-        for proposal: T3TaskProposal,
-        linkedWorkspaceId: UUID?,
-        groupId: UUID?,
-        in workspaces: [T3LinkWorkspace]
-    ) -> UUID? {
-        if let linkedWorkspaceId, workspaces.contains(where: { $0.id == linkedWorkspaceId }) {
-            return linkedWorkspaceId
-        }
-        let directory = (proposal.worktreePath ?? proposal.projectRoot).map(normalized)
-        return workspaces.first { workspace in
-            workspace.groupId == groupId
-                && workspace.title == proposal.title
-                && workspace.directory.map(normalized) == directory
-        }?.id
-    }
-
-    /// The directory to open a T3 task in: its worktree, else its project root.
-    ///
-    /// - Parameter proposal: The T3 task.
-    /// - Returns: The directory, or `nil` when T3 recorded neither.
-    public static func directory(for proposal: T3TaskProposal) -> String? {
-        proposal.worktreePath ?? proposal.projectRoot
     }
 
     static func normalized(_ path: String) -> String {

@@ -5,16 +5,43 @@ import WebKit
 /// GitHub's rendered HTML for a description or comment, sized to its content
 /// so it sits in a SwiftUI scroll view like any other text. Links don't
 /// navigate the view; they go to `onLink`.
+///
+/// Each block is its own web view, so a long timeline lists them lazily; a
+/// block coming back on screen starts at the height it last measured, not a
+/// one-line placeholder, so scrolling doesn't jump.
 struct AgentHomeHTMLBlock: View {
     let html: String
     let onLink: (URL) -> Void
 
-    @State private var height: CGFloat = 24
+    @State private var height: CGFloat
+
+    init(html: String, onLink: @escaping (URL) -> Void) {
+        self.html = html
+        self.onLink = onLink
+        _height = State(initialValue: AgentHomeHTMLHeights.shared.height(for: html) ?? 24)
+    }
 
     var body: some View {
         AgentHomeHTMLView(html: html, height: $height, onLink: onLink)
             .frame(height: height)
             .frame(maxWidth: .infinity)
+            .onChange(of: height) { _, measured in AgentHomeHTMLHeights.shared.remember(measured, for: html) }
+    }
+}
+
+/// The last measured height of each HTML block, by its content.
+@MainActor
+final class AgentHomeHTMLHeights {
+    static let shared = AgentHomeHTMLHeights()
+
+    private var heights: [String: CGFloat] = [:]
+    private static let limit = 400
+
+    func height(for html: String) -> CGFloat? { heights[html] }
+
+    func remember(_ height: CGFloat, for html: String) {
+        if heights.count >= Self.limit, heights[html] == nil { heights.removeAll(keepingCapacity: true) }
+        heights[html] = height
     }
 }
 
@@ -44,13 +71,22 @@ private struct AgentHomeHTMLView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsLinkPreview = false
+        Self.applyAppearance(context.environment.colorScheme, to: webView)
         context.coordinator.load(html, in: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        Self.applyAppearance(context.environment.colorScheme, to: webView)
         context.coordinator.load(html, in: webView)
+    }
+
+    /// The page's `prefers-color-scheme` follows the web view's appearance, not
+    /// SwiftUI's colour scheme, so pin it to the scheme the page around it uses.
+    private static func applyAppearance(_ colorScheme: ColorScheme, to webView: WKWebView) {
+        let name: NSAppearance.Name = colorScheme == .dark ? .darkAqua : .aqua
+        if webView.appearance?.name != name { webView.appearance = NSAppearance(named: name) }
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {

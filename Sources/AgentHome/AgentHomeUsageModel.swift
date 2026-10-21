@@ -7,8 +7,10 @@ import Observation
 /// cost over a chosen period.
 ///
 /// T3 Code tracks both. This reads them through the agent-chat sidecar
-/// (`GET /api/t3/usage`) every minute while Agent Home is open, so the sidebar
-/// meter stays current and the Usage page opens with data.
+/// (`GET /api/t3/usage`) every minute while Agent Home is on screen and cmux
+/// is active, so the sidebar meter stays current and the Usage page opens
+/// with data. Those background reads never start the sidecar; opening the
+/// Usage page does.
 @MainActor
 @Observable
 final class AgentHomeUsageModel {
@@ -42,13 +44,16 @@ final class AgentHomeUsageModel {
         didSet {
             guard period != oldValue else { return }
             UserDefaults.standard.set(period.rawValue, forKey: Self.periodDefaultsKey)
-            Task { await refresh() }
+            Task { await refresh(startsSidecar: true) }
         }
     }
 
+    /// Reads usage every minute while Agent Home is on screen.
+    @ObservationIgnored let poller = AgentHomePoller(interval: AgentHomeUsageModel.pollInterval)
+
     private weak var tabManager: TabManager?
-    private var pollTask: Task<Void, Never>?
     private var refreshAgain = false
+    private var refreshAgainStartsSidecar = false
 
     private static let pollInterval: Duration = .seconds(60)
     private static let periodDefaultsKey = "agentHomeUsagePeriod"
@@ -58,36 +63,43 @@ final class AgentHomeUsageModel {
 
     private init() {
         period = UserDefaults.standard.string(forKey: Self.periodDefaultsKey).flatMap(Period.init(rawValue:)) ?? .week
+        poller.action = { [weak self] in await self?.refresh() }
     }
 
     // MARK: - Loading
 
-    /// Starts reading usage every minute. Safe to call repeatedly.
-    func startIfNeeded(tabManager: TabManager) {
+    /// Remembers the window's tab manager for sidecar lookups.
+    func use(tabManager: TabManager) {
+        let isFirst = self.tabManager == nil
         self.tabManager = tabManager
-        guard pollTask == nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(for: Self.pollInterval)
-            }
-        }
+        // A poll that ran before any window was known skipped; catch up now.
+        if isFirst, report == nil { Task { await refresh() } }
     }
 
     /// Reads usage now. A call while a read is running reads again once it's done.
-    func refresh() async {
+    ///
+    /// - Parameter startsSidecar: Whether to start the agent-chat sidecar if no
+    ///   user action has yet; only user actions (opening the Usage page,
+    ///   Refresh, a new period) pass `true`.
+    func refresh(startsSidecar: Bool = false) async {
         guard let tabManager else { return }
         guard !isLoading else {
             refreshAgain = true
+            refreshAgainStartsSidecar = refreshAgainStartsSidecar || startsSidecar
             return
         }
         isLoading = true
         defer { isLoading = false }
+        var startsSidecar = startsSidecar
         repeat {
             refreshAgain = false
             let period = self.period
             do {
-                let (data, status) = try await AgentHomeT3Model.shared.sidecarGET(Self.path(for: period), tabManager: tabManager)
+                let (data, status) = try await AgentHomeT3Model.shared.sidecarGET(
+                    Self.path(for: period),
+                    tabManager: tabManager,
+                    startsSidecar: startsSidecar
+                )
                 if status == 200, let fetched = ProviderUsageReport.parse(data) {
                     if fetched != report || period != reportPeriod {
                         report = fetched
@@ -101,10 +113,14 @@ final class AgentHomeUsageModel {
                     errorMessage = body?["error"] as? String
                         ?? String(localized: "agentHome.usage.failed", defaultValue: "T3 didn't report usage. Will try again shortly.")
                 }
+            } catch AgentHomeT3Model.NewChatError.sidecarNotStarted {
+                // Nothing has started the sidecar yet; keep what's shown.
             } catch {
                 errorMessage = (error as? LocalizedError)?.errorDescription
                     ?? String(localized: "agentHome.usage.unreachable", defaultValue: "Couldn't reach T3 Code. Is it running?")
             }
+            startsSidecar = refreshAgainStartsSidecar
+            refreshAgainStartsSidecar = false
         } while refreshAgain
     }
 
@@ -124,12 +140,11 @@ final class AgentHomeUsageModel {
             // The last 24 whole hours, ending with the current one.
             let hour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
             let since = hour.addingTimeInterval(-23 * 3600)
-            let iso = ISO8601DateFormatter()
             items += [
                 URLQueryItem(name: "since", value: formatter.string(from: since)),
                 URLQueryItem(name: "resolution", value: "hour"),
-                URLQueryItem(name: "sinceTime", value: iso.string(from: since)),
-                URLQueryItem(name: "untilTime", value: iso.string(from: now)),
+                URLQueryItem(name: "sinceTime", value: since.formatted(.iso8601)),
+                URLQueryItem(name: "untilTime", value: now.formatted(.iso8601)),
             ]
         case .week, .month:
             let days = period == .week ? 6 : 29

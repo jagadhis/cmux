@@ -43,7 +43,7 @@ public struct AgentSessionFile: Identifiable, Hashable, Sendable {
     public var kind: Kind { Self.kind(ofPath: path) }
 
     /// Classifies a path as working memory, a plan or another file.
-    public static func kind(ofPath path: String) -> Kind {
+    static func kind(ofPath path: String) -> Kind {
         let components = path.split(separator: "/").map(String.init)
         let directories = components.dropLast()
         if directories.contains(where: { $0 == "work-memory" || $0 == "working-memory" })
@@ -69,10 +69,10 @@ public struct AgentSessionFile: Identifiable, Hashable, Sendable {
     ///   - root: The session's project or worktree folder.
     ///   - home: The home folder. Defaults to the current user's.
     public func displayPath(relativeTo root: String?, home: String = NSHomeDirectory()) -> String {
-        if let root = root.map(Self.trimmingTrailingSlash), !root.isEmpty, path.hasPrefix(root + "/") {
+        if let root = root.map(\.trimmingTrailingSlash), !root.isEmpty, path.hasPrefix(root + "/") {
             return String(path.dropFirst(root.count + 1))
         }
-        let home = Self.trimmingTrailingSlash(home)
+        let home = home.trimmingTrailingSlash
         if !home.isEmpty, path.hasPrefix(home + "/") {
             return "~/" + path.dropFirst(home.count + 1)
         }
@@ -124,9 +124,6 @@ public struct AgentSessionFile: Identifiable, Hashable, Sendable {
         return ((directory as NSString).appendingPathComponent(trimmed) as NSString).standardizingPath
     }
 
-    private static func trimmingTrailingSlash(_ path: String) -> String {
-        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
-    }
 }
 
 /// The files one agent session wrote, built from its tool calls as they arrive.
@@ -148,7 +145,13 @@ public struct AgentSessionFileLog: Hashable, Sendable {
     ///   - workingDirectory: The session's folder, for relative paths.
     ///   - date: When the call happened.
     public mutating func record(toolName: String, toolInputJSON: String?, workingDirectory: String?, at date: Date?) {
-        for path in Self.writtenPaths(toolName: toolName, toolInputJSON: toolInputJSON, workingDirectory: workingDirectory) {
+        guard Self.mayWrite(toolName: toolName, toolInputJSON: toolInputJSON) else { return }
+        record(toolName: toolName, input: toolInputJSON?.agentHomeJSONObject, toolInputJSON: toolInputJSON, workingDirectory: workingDirectory, at: date)
+    }
+
+    /// Records the files a tool call writes, with its input already parsed.
+    mutating func record(toolName: String, input: Any?, toolInputJSON: String?, workingDirectory: String?, at date: Date?) {
+        for path in Self.writtenPaths(toolName: toolName, input: input, toolInputJSON: toolInputJSON, workingDirectory: workingDirectory) {
             record(path: path, at: date)
         }
     }
@@ -161,16 +164,23 @@ public struct AgentSessionFileLog: Hashable, Sendable {
         byPath[path] = file
     }
 
+    /// Whether a tool call can write files, checked without parsing its input.
+    /// Most calls are reads and commands.
+    static func mayWrite(toolName: String, toolInputJSON: String?) -> Bool {
+        writingToolNames.contains(toolName) || toolInputJSON?.contains("*** Begin Patch") == true
+    }
+
+    private static let writingToolNames: Set<String> = ["Edit", "MultiEdit", "Write", "str_replace_based_edit_tool", "NotebookEdit"]
+
     /// The absolute paths a tool call writes: Claude's `Edit`, `MultiEdit`,
     /// `Write` and `NotebookEdit`, and the files an `apply_patch` patch adds,
     /// updates or moves to. Deleted files aren't listed, since they can't be opened.
-    public static func writtenPaths(toolName: String, toolInputJSON: String?, workingDirectory: String?) -> [String] {
-        let writesByName = ["Edit", "MultiEdit", "Write", "str_replace_based_edit_tool", "NotebookEdit"].contains(toolName)
-        // Most calls are reads and commands; skip parsing them.
-        guard writesByName || toolInputJSON?.contains("*** Begin Patch") == true else { return [] }
-        let input = toolInputJSON
-            .flatMap { $0.data(using: .utf8) }
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+    static func writtenPaths(toolName: String, toolInputJSON: String?, workingDirectory: String?) -> [String] {
+        guard mayWrite(toolName: toolName, toolInputJSON: toolInputJSON) else { return [] }
+        return writtenPaths(toolName: toolName, input: toolInputJSON?.agentHomeJSONObject, toolInputJSON: toolInputJSON, workingDirectory: workingDirectory)
+    }
+
+    static func writtenPaths(toolName: String, input: Any?, toolInputJSON: String?, workingDirectory: String?) -> [String] {
         let object = input as? [String: Any] ?? [:]
         let raw: [String]
         switch toolName {
@@ -188,7 +198,7 @@ public struct AgentSessionFileLog: Hashable, Sendable {
     }
 
     /// The file paths a patch in Codex's `*** Begin Patch` format adds, updates or moves to.
-    public static func patchPaths(in patch: String) -> [String] {
+    static func patchPaths(in patch: String) -> [String] {
         var paths: [String] = []
         for line in patch.split(whereSeparator: \.isNewline) {
             if line.hasPrefix("*** Add File: ") || line.hasPrefix("*** Update File: ") {

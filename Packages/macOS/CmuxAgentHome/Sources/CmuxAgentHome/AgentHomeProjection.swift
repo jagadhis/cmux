@@ -65,10 +65,6 @@ public struct AgentHomeTask: Identifiable, Hashable, Sendable {
     /// Total lines deleted across changed files.
     public var deletions: Int { input.changedFiles.reduce(0) { $0 + $1.deletions } }
 
-    /// The permission requests waiting in this task, in agent order.
-    public var pendingPermissions: [AgentHomePermissionRequest] {
-        input.agents.compactMap(\.pendingPermission)
-    }
 }
 
 /// A project with its tasks in sidebar order.
@@ -118,14 +114,9 @@ public struct AgentHomeSnapshot: Hashable, Sendable {
         tasks(matching: filter).count
     }
 
-    /// The listed task ⌘1 through ⌘9 select, in sidebar order.
-    ///
-    /// - Parameter number: The shortcut number, 1 through 9.
-    /// - Returns: The task id, or `nil` when there are fewer tasks or the number is out of range.
-    public func taskId(forShortcut number: Int) -> UUID? {
-        guard (1...9).contains(number) else { return nil }
-        let tasks = listedTasks
-        return number <= tasks.count ? tasks[number - 1].id : nil
+    /// The shortcut number (⌘1 through ⌘9) of each of the first nine listed tasks, by task id.
+    public var shortcutNumbers: [UUID: Int] {
+        Dictionary(uniqueKeysWithValues: listedTasks.prefix(9).enumerated().map { ($1.id, $0 + 1) })
     }
 
     /// Agents that are running or waiting on the user, across every task.
@@ -137,6 +128,15 @@ public struct AgentHomeSnapshot: Hashable, Sendable {
     /// - Returns: The task, or `nil` when no task has that id.
     public func task(id: UUID) -> AgentHomeTask? {
         allTasks.first { $0.id == id }
+    }
+}
+
+extension AgentHomeTask {
+    /// Creates a task, deriving its status with ``AgentHomeProjection/status(of:)``.
+    ///
+    /// - Parameter input: The task as the app supplies it.
+    public init(input: AgentHomeTaskInput) {
+        self.init(input: input, status: AgentHomeProjection.status(of: input))
     }
 }
 
@@ -156,7 +156,7 @@ public enum AgentHomeProjection {
         projects: [AgentHomeProjectInput],
         tasks: [AgentHomeTaskInput]
     ) -> AgentHomeSnapshot {
-        let derived = tasks.map { AgentHomeTask(input: $0, status: status(of: $0)) }
+        let derived = tasks.map(AgentHomeTask.init(input:))
         let knownProjectIds = Set(projects.map(\.id))
         let byProject = Dictionary(grouping: derived.filter { $0.input.projectId.map(knownProjectIds.contains) == true }) {
             $0.input.projectId!

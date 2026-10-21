@@ -1,3 +1,4 @@
+import AppKit
 import CmuxAgentHome
 import SwiftUI
 
@@ -11,6 +12,8 @@ struct AgentHomeSidebarView: View {
 
     /// Projects whose T3 tasks are all shown, keyed by group id or T3 project id.
     @State private var expandedT3Lists: Set<String> = []
+    /// Bumped when a workspace changes in a way `body` can't observe; see ``agentHomeWatchesWorkspaces(_:token:)``.
+    @State private var workspaceChanges = 0
     @Bindable private var viewState = AgentHomeTaskViewState.shared
     private let pullRequests = AgentHomePullRequestsModel.shared
     private let usage = AgentHomeUsageModel.shared
@@ -22,6 +25,7 @@ struct AgentHomeSidebarView: View {
     private static let collapsedSubThreadCount = 6
 
     var body: some View {
+        let _ = workspaceChanges
         let snapshot = AgentHomeSnapshotBuilder.snapshot(tabManager: tabManager, feed: AgentHomeFeedModel.shared.signals())
         let layout = t3Layout(snapshot: snapshot)
         let shortcutNumbers = Dictionary(
@@ -134,9 +138,12 @@ struct AgentHomeSidebarView: View {
             if let threadId { t3Model.markSeen(threadId, tabManager: tabManager) }
         }
         .onAppear {
-            t3Model.startIfNeeded(tabManager: tabManager)
-            pullRequests.startIfNeeded()
-            usage.startIfNeeded(tabManager: tabManager)
+            t3Model.use(tabManager: tabManager)
+            usage.use(tabManager: tabManager)
+        }
+        .agentHomeWatchesWorkspaces(tabManager.tabs, token: $workspaceChanges)
+        .agentHomePolling {
+            [AgentHomeT3Model.shared.poller, AgentHomePullRequestsModel.shared.poller, AgentHomeUsageModel.shared.poller]
         }
     }
 
@@ -333,7 +340,7 @@ private struct AgentHomeFilterRow: View {
             case .needsYou:
                 Text(count, format: .number)
                     .font(.system(size: 11, weight: .bold).monospacedDigit())
-                    .foregroundStyle(Color.black.opacity(0.85))
+                    .foregroundStyle(AgentHomePalette.onFill)
                     .padding(.horizontal, 5)
                     .frame(minWidth: 18, minHeight: 17)
                     .background(Capsule().fill(AgentHomePalette.needsYou))
@@ -557,19 +564,20 @@ struct AgentHomeStatusDot: View {
 
 /// A dot that breathes while an agent works.
 struct AgentHomePulsingDot: View {
-    @State private var expanded = false
+    private static let period: TimeInterval = 1.6
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(AgentHomePalette.running.opacity(expanded ? 0 : 0.45))
-                .frame(width: expanded ? 15 : 7, height: expanded ? 15 : 7)
-            Circle()
-                .fill(AgentHomePalette.running)
-                .frame(width: 7, height: 7)
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { expanded = true }
+        AgentHomeMotionTimeline { time in
+            // 0 → 1 over each pulse; still at the resting ring under Reduce Motion.
+            let phase = time.map { $0.truncatingRemainder(dividingBy: Self.period) / Self.period } ?? 0.5
+            ZStack {
+                Circle()
+                    .fill(AgentHomePalette.running.opacity(0.45 * (1 - phase)))
+                    .frame(width: 7 + 8 * phase, height: 7 + 8 * phase)
+                Circle()
+                    .fill(AgentHomePalette.running)
+                    .frame(width: 7, height: 7)
+            }
         }
     }
 }
@@ -577,11 +585,10 @@ struct AgentHomePulsingDot: View {
 /// Three bars that bounce while any agent is running.
 struct AgentHomeActivityBars: View {
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
+        AgentHomeMotionTimeline { time in
             HStack(alignment: .bottom, spacing: 1.5) {
                 ForEach(0..<3, id: \.self) { index in
-                    let phase = (t * 2 * .pi) + Double(index) * 1.2
+                    let phase = ((time ?? 0) * 2 * .pi) + Double(index) * 1.2
                     RoundedRectangle(cornerRadius: 1)
                         .fill(AgentHomePalette.running)
                         .frame(width: 2, height: 3 + 7 * (0.5 + 0.5 * sin(phase)))
@@ -598,21 +605,56 @@ struct AgentHomeProjectBadge: View {
     let colorHex: String?
 
     var body: some View {
+        let fill = AgentHomePalette.projectColor(hex: colorHex, name: name)
         Text(verbatim: name.first.map { String($0).uppercased() } ?? "•")
             .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.white)
+            .foregroundStyle(AgentHomePalette.readableForeground(on: fill))
             .frame(width: 15, height: 15)
-            .background(RoundedRectangle(cornerRadius: 4).fill(AgentHomePalette.projectColor(hex: colorHex, name: name)))
+            .background(RoundedRectangle(cornerRadius: 4).fill(fill))
     }
 }
 
 // MARK: - Styling
 
+/// Agent Home's status colours. Each is a light/dark pair: the dark values are
+/// bright enough for dark backgrounds, the light values are deepened so text
+/// and small glyphs stay readable on white. They resolve against the SwiftUI
+/// colour scheme in the environment, so an Agent Home subtree that follows the
+/// terminal theme gets the matching variant.
 enum AgentHomePalette {
-    static let needsYou = Color(red: 0.94, green: 0.71, blue: 0.30)
-    static let running = Color(red: 0.49, green: 0.55, blue: 1.0)
-    static let review = Color(red: 0.49, green: 0.55, blue: 1.0).opacity(0.75)
-    static let done = Color(red: 0.37, green: 0.75, blue: 0.55)
+    static let needsYou = adaptive(light: 0xA86B00, dark: 0xF0B54C)
+    static let running = adaptive(light: 0x4C5BE0, dark: 0x7D8CFF)
+    static let review = running.opacity(0.75)
+    static let done = adaptive(light: 0x1E8754, dark: 0x5EBF8C)
+    /// Merged pull requests and working-memory notes.
+    static let purple = adaptive(light: 0x7A4CCC, dark: 0x9E73EB)
+    static let danger = adaptive(light: 0xC93C37, dark: 0xF06A64)
+    /// Text and glyphs drawn on a solid status fill: white on the deep light
+    /// fills, near-black on the bright dark ones.
+    static let onFill = adaptive(light: 0xFFFFFF, dark: 0x16161A)
+
+    static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(
+                srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255,
+                alpha: 1
+            )
+        })
+    }
+
+    /// Black or white, whichever reads better on a fixed fill such as a project colour.
+    static func readableForeground(on color: Color) -> Color {
+        guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return .white }
+        func channel(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * channel(rgb.redComponent) + 0.7152 * channel(rgb.greenComponent) + 0.0722 * channel(rgb.blueComponent)
+        // Black and white contrast equally at a luminance of about 0.179.
+        return luminance > 0.179 ? Color.black.opacity(0.85) : .white
+    }
 
     /// Colours for projects without a custom colour, picked stably from the name.
     private static let projectFallbacks: [Color] = [
@@ -657,10 +699,7 @@ private struct AgentHomeRowChrome: ViewModifier {
         content
             .padding(.horizontal, 9)
             .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
-            )
+            .agentHomeRowBackground(isSelected: isSelected, isHovered: isHovered)
             .onHover { isHovered = $0 }
             .animation(.easeOut(duration: 0.12), value: isHovered)
     }

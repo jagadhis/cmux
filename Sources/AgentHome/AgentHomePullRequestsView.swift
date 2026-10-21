@@ -39,8 +39,8 @@ struct AgentHomePullRequestsView: View {
             }
             .scrollIndicators(.never)
         }
-        .background(.background)
-        .onAppear { model.startIfNeeded() }
+        .agentHomePageBackground()
+        .agentHomePolling { [AgentHomePullRequestsModel.shared.poller] }
     }
 
     // MARK: - Header
@@ -405,7 +405,7 @@ struct AgentHomePullRequestsSidebarRow: View {
                 if reviewCount > 0 {
                     Text(reviewCount, format: .number)
                         .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AgentHomePalette.onFill)
                         .padding(.horizontal, 6)
                         .frame(height: 16)
                         .background(Capsule().fill(AgentHomePalette.running))
@@ -414,10 +414,7 @@ struct AgentHomePullRequestsSidebarRow: View {
             }
             .padding(.horizontal, 9)
             .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isSelected ? 0.09 : (isHovered ? 0.05 : 0)))
-            )
+            .agentHomeRowBackground(isSelected: isSelected, isHovered: isHovered)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -5,8 +5,11 @@ import Foundation
 
 /// Builds the Agent Home snapshot from a window's live workspaces and groups.
 ///
-/// Reads only observable workspace state, so a SwiftUI body that calls it
-/// re-renders when lifecycle, branch, PR or status changes.
+/// Some of what it reads isn't observable from SwiftUI: workspace titles,
+/// groups and folders are `@Published` on `Workspace` (an `ObservableObject`),
+/// and agents' lifecycle states sit outside Observation. Views that call it
+/// also apply ``View/agentHomeWatchesWorkspaces(_:token:)`` so they re-render
+/// when those change.
 @MainActor
 enum AgentHomeSnapshotBuilder {
     static func snapshot(

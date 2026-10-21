@@ -13,7 +13,11 @@ public enum AgentActivityDescriber {
     ///   - workingDirectory: The task's directory; file paths under it are shown relative to it.
     /// - Returns: The line, without a trailing ellipsis unless it was truncated.
     public static func describe(toolName: String, toolInputJSON: String?, workingDirectory: String? = nil) -> String {
-        let input = parse(toolInputJSON)
+        describe(toolName: toolName, input: toolInputJSON?.agentHomeJSONDictionary ?? [:], workingDirectory: workingDirectory)
+    }
+
+    /// Describes a tool call whose input is already parsed.
+    static func describe(toolName: String, input: [String: Any], workingDirectory: String?) -> String {
         func path(_ key: String = "file_path") -> String? {
             (input[key] as? String).map { display(path: $0, relativeTo: workingDirectory) }
         }
@@ -91,13 +95,6 @@ public enum AgentActivityDescriber {
     static func truncate(_ line: String) -> String {
         guard line.count > maximumLength else { return line }
         return String(line.prefix(maximumLength - 1)) + "…"
-    }
-
-    static func parse(_ json: String?) -> [String: Any] {
-        guard let data = json?.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [:] }
-        return object
     }
 }
 

@@ -407,12 +407,12 @@ private struct AgentHomeT3PullRequestRow: View {
 struct AgentHomeT3PullRequestStateGlyph: View {
     let pullRequest: T3Thread.PullRequest
 
-    static let merged = Color(red: 0.62, green: 0.45, blue: 0.92)
+    static let merged = AgentHomePalette.purple
 
     var body: some View {
         let (symbol, color): (String, Color) = switch pullRequest.status {
         case .merged: ("arrow.triangle.merge", Self.merged)
-        case .closed: ("xmark.circle", .red.opacity(0.85))
+        case .closed: ("xmark.circle", AgentHomePalette.danger)
         case .open where pullRequest.isDraft: ("circle.dashed", .secondary)
         case .open where pullRequest.isConflicting: ("arrow.triangle.pull", AgentHomePalette.needsYou)
         case .open: ("arrow.triangle.pull", AgentHomePalette.done)

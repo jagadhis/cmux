@@ -10,7 +10,13 @@ public struct GitHubPullRequestRef: Hashable, Sendable, Identifiable {
         self.number = number
     }
 
-    public var id: String { "\(repository.lowercased())#\(number)" }
+    public var id: String { Self.key(repository: repository, number: number) }
+
+    /// `owner/name#number` with the repository lowercased: how Agent Home and
+    /// T3 key a pull request, whatever case its repository was written in.
+    public static func key(repository: String, number: Int) -> String {
+        "\(repository.lowercased())#\(number)"
+    }
     public var owner: String { String(repository.split(separator: "/").first ?? "") }
     public var name: String { String(repository.split(separator: "/").dropFirst().first ?? "") }
     public var url: URL? { URL(string: "https://github.com/\(repository)/pull/\(number)") }

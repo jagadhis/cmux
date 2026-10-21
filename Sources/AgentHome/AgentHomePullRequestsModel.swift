@@ -1,4 +1,5 @@
 import AppKit
+import Bonsplit
 import CmuxAgentHome
 import Foundation
 import Observation
@@ -8,9 +9,9 @@ import WebKit
 /// review and the ones they opened.
 ///
 /// Reads GitHub through the `gh` CLI with the account it's signed in to, every
-/// couple of minutes while Agent Home is open. Opening a pull request gives it
-/// a workspace: the page in a browser beside a terminal in the matching T3
-/// project's folder.
+/// couple of minutes while Agent Home is on screen and cmux is active. Opening
+/// a pull request gives it a workspace: the page in a browser beside a
+/// terminal in the matching T3 project's folder.
 @MainActor
 @Observable
 final class AgentHomePullRequestsModel {
@@ -29,22 +30,16 @@ final class AgentHomePullRequestsModel {
     private var origins: [String: String] = [:]
     /// The workspace each opened pull request lives in, by URL.
     private var workspaces: [String: UUID] = [:]
-    private var pollTask: Task<Void, Never>?
+    private let gitHub = GitHubCLI()
 
-    private static let pollInterval: Duration = .seconds(120)
+    /// Reads GitHub every couple of minutes while Agent Home is on screen.
+    @ObservationIgnored let poller = AgentHomePoller(interval: .seconds(120))
+
+    private init() {
+        poller.action = { [weak self] in await self?.refresh() }
+    }
 
     // MARK: - Loading
-
-    /// Starts polling GitHub. Safe to call repeatedly.
-    func startIfNeeded() {
-        guard pollTask == nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(for: Self.pollInterval)
-            }
-        }
-    }
 
     /// Reads GitHub and T3 now.
     func refresh() async {
@@ -52,26 +47,34 @@ final class AgentHomePullRequestsModel {
         isLoading = true
         defer { isLoading = false }
 
-        let local = await Task.detached(priority: .utility) { () -> ([T3CodeStateReader.Project], [String: String], [String: T3CodeStateReader.PullRequestThread]) in
-            let reader = T3CodeStateReader()
-            let projects = (try? reader.projects()) ?? []
+        // The T3 model reads the same project list every few seconds; reuse it once it has.
+        let knownProjects = AgentHomeT3Model.shared.allProjects
+        let local = await Task.detached(priority: .utility) { () -> (projects: [T3CodeStateReader.Project]?, origins: [String: String], threads: [String: T3CodeStateReader.PullRequestThread]?) in
+            let read = try? T3CodeStateReader().withConnection { connection in
+                (knownProjects.isEmpty ? try? connection.projects() : knownProjects, try? connection.pullRequestThreads())
+            }
+            let projects = read?.0
             var origins: [String: String] = [:]
-            for project in projects {
+            for project in projects ?? [] {
                 let config = URL(fileURLWithPath: project.root).appendingPathComponent(".git/config")
                 if let text = try? String(contentsOf: config, encoding: .utf8),
                    let repository = GitHubRepositoryMatcher.originRepository(gitConfig: text) {
                     origins[project.id] = repository
                 }
             }
-            return (projects, origins, (try? reader.pullRequestThreads()) ?? [:])
+            return (projects, origins, read?.1)
         }.value
-        projects = local.0
-        origins = local.1
-        linkedThreads = local.2
+        // A failed read keeps what was shown; T3 being briefly busy shouldn't empty the lists.
+        if let projects = local.projects {
+            self.projects = projects
+            origins = local.origins
+        }
+        if let threads = local.threads { linkedThreads = threads }
+        #if DEBUG
+        if local.projects == nil || local.threads == nil { cmuxDebugLog("agentHome.prs.t3ReadFailed") }
+        #endif
 
-        let result = await Task.detached(priority: .utility) { () -> Result<GitHubPullRequestInbox, GitHubCLIError> in
-            GitHubCLI.fetchInbox()
-        }.value
+        let result = await gitHub.fetchInbox()
         switch result {
         case .success(let fetched):
             if fetched != inbox { inbox = fetched }
@@ -136,21 +139,43 @@ final class AgentHomePullRequestsModel {
         let workspace = tabManager.addWorkspace(title: title, workingDirectory: project?.root, select: true)
         tabManager.focusTab(workspace.id)
         workspaces[url.absoluteString] = workspace.id
+        openGitHubSplit(
+            page,
+            in: workspace,
+            beside: workspace.focusedPanelId ?? workspace.panels.keys.first,
+            orientation: .horizontal,
+            insertFirst: true,
+            dividerPosition: 0.64
+        )
+    }
+
+    /// Opens a GitHub page in a browser split in `workspace`, signed in to
+    /// GitHub when a browser profile is, or in the default browser when the
+    /// split can't open. Pull requests and their links open through here,
+    /// from the Pull requests page and from a T3 task's linked pull requests.
+    func openGitHubSplit(
+        _ url: URL,
+        in workspace: Workspace,
+        beside anchor: UUID?,
+        orientation: SplitOrientation,
+        insertFirst: Bool = false,
+        dividerPosition: CGFloat? = nil
+    ) {
         let viewer = inbox?.viewer
         Task {
             let profileID = await Self.gitHubProfileID(viewer: viewer)
-            guard let terminalId = workspace.focusedPanelId ?? workspace.panels.keys.first,
+            guard let anchor,
                   workspace.newBrowserSplit(
-                      from: terminalId,
-                      orientation: .horizontal,
-                      insertFirst: true,
-                      url: page,
+                      from: anchor,
+                      orientation: orientation,
+                      insertFirst: insertFirst,
+                      url: url,
                       preferredProfileID: profileID,
                       focus: true,
-                      initialDividerPosition: 0.64
+                      initialDividerPosition: dividerPosition
                   ) != nil
             else {
-                NSWorkspace.shared.open(page)
+                NSWorkspace.shared.open(url)
                 return
             }
         }
@@ -200,74 +225,5 @@ final class AgentHomePullRequestsModel {
             localized: "agentHome.prs.reviewPrompt",
             defaultValue: "Review \(url). Check out the branch, read the change and run the relevant tests. Then tell me what it does, anything that looks wrong or risky, and whether you'd approve it. Don't post anything on GitHub."
         )
-    }
-}
-
-// MARK: - gh
-
-struct GitHubCLIError: Error {
-    let message: String
-}
-
-/// Runs the `gh` CLI. GUI apps don't get the shell's PATH, so it's looked up in the usual places.
-enum GitHubCLI {
-    static let candidatePaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-
-    static var executable: String? {
-        candidatePaths.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    /// Fetches the inbox, trying once more when GitHub has a hiccup (its search API sometimes returns 502).
-    static func fetchInbox() -> Result<GitHubPullRequestInbox, GitHubCLIError> {
-        let first = fetchOnce()
-        if case .failure = first, executable != nil {
-            Thread.sleep(forTimeInterval: 2)
-            return fetchOnce()
-        }
-        return first
-    }
-
-    private static func fetchOnce() -> Result<GitHubPullRequestInbox, GitHubCLIError> {
-        guard let gh = executable else {
-            return .failure(GitHubCLIError(message: String(
-                localized: "agentHome.prs.noGh",
-                defaultValue: "Install the GitHub CLI (brew install gh) and sign in with gh auth login to see your pull requests."
-            )))
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: gh)
-        process.arguments = [
-            "api", "graphql",
-            "-F", "review=\(GitHubPullRequestInbox.reviewSearch)",
-            "-F", "mine=\(GitHubPullRequestInbox.mineSearch)",
-            "-f", "query=\(GitHubPullRequestInbox.query)",
-        ]
-        var environment = ProcessInfo.processInfo.environment
-        environment["GH_PROMPT_DISABLED"] = "1"
-        environment["NO_COLOR"] = "1"
-        process.environment = environment
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        do {
-            try process.run()
-        } catch {
-            return .failure(GitHubCLIError(message: error.localizedDescription))
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorText = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        process.waitUntilExit()
-        if let inbox = GitHubPullRequestInbox.parse(data) { return .success(inbox) }
-        let detail = errorText.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        if detail.contains("auth login") || detail.contains("401") {
-            return .failure(GitHubCLIError(message: String(
-                localized: "agentHome.prs.signIn",
-                defaultValue: "Sign in to GitHub with gh auth login to see your pull requests."
-            )))
-        }
-        return .failure(GitHubCLIError(message: detail.isEmpty
-            ? String(localized: "agentHome.prs.failed", defaultValue: "Couldn't reach GitHub. Will try again shortly.")
-            : String(localized: "agentHome.prs.failedDetail", defaultValue: "Couldn't reach GitHub: \(detail)")))
     }
 }

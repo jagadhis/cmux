@@ -24,6 +24,8 @@ final class AgentHomeT3PullRequestActions {
         var failed: Bool
     }
 
+    private let gitHub = GitHubCLI()
+
     private init() {}
 
     /// Opens a pull request in a browser split beside the task's terminal,
@@ -40,44 +42,22 @@ final class AgentHomeT3PullRequestActions {
             return
         }
         let anchor = workspace.panels.values.first { !($0 is BrowserPanel) }?.id ?? workspace.focusedPanelId
-        let viewer = AgentHomePullRequestsModel.shared.inbox?.viewer
-        Task {
-            let profileID = await AgentHomePullRequestsModel.gitHubProfileID(viewer: viewer)
-            guard let anchor,
-                  workspace.newBrowserSplit(
-                      from: anchor,
-                      orientation: .vertical,
-                      url: url,
-                      preferredProfileID: profileID,
-                      focus: true
-                  ) != nil
-            else {
-                NSWorkspace.shared.open(url)
-                return
-            }
-        }
+        AgentHomePullRequestsModel.shared.openGitHubSplit(url, in: workspace, beside: anchor, orientation: .vertical)
     }
 
-    /// Runs a step that acts on GitHub directly (Ready or Merge).
+    /// Runs a step that acts on GitHub directly (Ready or Merge), through the
+    /// same `gh` commands as the pull request detail view's actions.
     func run(_ step: T3PullRequestNextStep, on pullRequest: T3Thread.PullRequest) {
         let key = pullRequest.key
-        guard !pending.contains(key) else { return }
+        guard !pending.contains(key), !step.startsChat else { return }
         pending.insert(key)
         outcomes[key] = nil
-        let repository = pullRequest.repository
-        let number = String(pullRequest.number)
+        let ref = GitHubPullRequestRef(repository: pullRequest.repository, number: pullRequest.number)
         Task {
-            let result: Result<String, GitHubCLIError> = await Task.detached(priority: .userInitiated) {
-                switch step {
-                case .markReady:
-                    return GitHubCLI.run(["pr", "ready", number, "--repo", repository])
-                case .merge:
-                    let method = Self.mergeMethod(repository: repository)
-                    return GitHubCLI.run(["pr", "merge", number, "--repo", repository, "--\(method)"])
-                case .resolveConflicts, .fixChecks:
-                    return .failure(GitHubCLIError(message: "unsupported"))
-                }
-            }.value
+            let action: AgentHomePullRequestDetailModel.Action = step == .merge
+                ? .merge(await Self.mergeMethod(repository: ref.repository, gitHub: gitHub))
+                : .ready
+            let result = await gitHub.run(AgentHomePullRequestDetailModel.arguments(for: action, ref: ref), changesGitHub: true)
             pending.remove(key)
             switch result {
             case .success:
@@ -102,54 +82,15 @@ final class AgentHomeT3PullRequestActions {
     }
 
     /// The first merge method the repository allows, in T3's order of preference.
-    nonisolated static func mergeMethod(repository: String) -> String {
-        guard case .success(let text) = GitHubCLI.run([
+    static func mergeMethod(repository: String, gitHub: GitHubCLI) async -> GitHubPullRequestDetail.MergeMethod {
+        guard case .success(let text) = await gitHub.run([
             "repo", "view", repository, "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed",
         ]),
-            let data = text.data(using: .utf8),
-            let allowed = try? JSONSerialization.jsonObject(with: data) as? [String: Bool]
-        else { return "merge" }
-        if allowed["mergeCommitAllowed"] == true { return "merge" }
-        if allowed["squashMergeAllowed"] == true { return "squash" }
-        if allowed["rebaseMergeAllowed"] == true { return "rebase" }
-        return "merge"
-    }
-}
-
-extension GitHubCLI {
-    /// Runs `gh` with arguments and returns its output, or its first error line.
-    nonisolated static func run(_ arguments: [String]) -> Result<String, GitHubCLIError> {
-        guard let gh = executable else {
-            return .failure(GitHubCLIError(message: String(
-                localized: "agentHome.prs.noGh",
-                defaultValue: "Install the GitHub CLI (brew install gh) and sign in with gh auth login to see your pull requests."
-            )))
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: gh)
-        process.arguments = arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["GH_PROMPT_DISABLED"] = "1"
-        environment["NO_COLOR"] = "1"
-        process.environment = environment
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        do {
-            try process.run()
-        } catch {
-            return .failure(GitHubCLIError(message: error.localizedDescription))
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorText = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = errorText.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-            return .failure(GitHubCLIError(message: detail.isEmpty
-                ? String(localized: "agentHome.prs.failed", defaultValue: "Couldn't reach GitHub. Will try again shortly.")
-                : detail))
-        }
-        return .success(String(data: data, encoding: .utf8) ?? "")
+            let allowed = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Bool]
+        else { return .merge }
+        if allowed["mergeCommitAllowed"] == true { return .merge }
+        if allowed["squashMergeAllowed"] == true { return .squash }
+        if allowed["rebaseMergeAllowed"] == true { return .rebase }
+        return .merge
     }
 }
