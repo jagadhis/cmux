@@ -187,3 +187,129 @@ export const stressConversationBlocks: Block[] = Array.from({ length: 250 }, (_,
 ]).flat();
 
 export const galleryActions: SessionActions = { fork: true, handoff: true };
+
+/** A reply that uses every Markdown construct agents write, for checking how the chat renders them. */
+export const markdownShowcase = `# Release notes draft
+
+I read \`CHANGELOG.md\`, \`docs/release.md\` and the last 40 commits. Here's what changed and what's still open.
+
+## Summary
+
+The sidecar now **streams** tool output, ~~polls~~ the T3 projection less often, and renders *Markdown files* the way GitHub does. See [the PR](https://github.com/manaflow-ai/cmux/pull/847) and #812.
+
+### What changed
+
+- Projection reads are batched
+  - one read per tick instead of one per thread
+  - cached for \`250ms\`
+- Tool cards show their output
+- Images in replies load through \`/api/local-image\`
+
+1. Run \`bun install\`
+2. Start the server with \`bun server.ts\`
+3. Open the gallery
+
+- [x] Parser handles tables
+- [x] Code blocks highlight
+- [ ] Mermaid diagrams
+
+> [!NOTE]
+> The terminal stays the source of truth. The chat only mirrors it.
+
+> [!WARNING]
+> Restart the sidecar after changing \`agentChat.fonts\`.
+
+---
+
+#### Files touched
+
+| File | Change | Lines |
+| :--- | :---: | ---: |
+| \`server.ts\` | modified | +104 −12 |
+| \`src/ChatMarkdown.tsx\` | modified | +28 −20 |
+| \`public/app.css\` | modified | +101 −8 |
+
+\`\`\`ts:src/projection.ts
+export async function readProjection(threadId: string): Promise<Projection | null> {
+  const cached = cache.get(threadId);
+  if (cached && Date.now() - cached.at < 250) return cached.value;
+  const value = await t3.read(threadId);
+  cache.set(threadId, { at: Date.now(), value });
+  return value;
+}
+\`\`\`
+
+\`\`\`diff
+--- a/server.ts
++++ b/server.ts
+@@ -12,7 +12,7 @@ export function start() {
+-  const interval = 100;
++  const interval = 250;
+   poll(interval);
+ }
+\`\`\`
+
+Here's the README I wrote:
+
+\`\`\`markdown
+# cmux-agent-chat
+
+A web chat surface for **cmux**.
+
+## Run
+
+- \`bun server.ts\`
+- open \`http://127.0.0.1:7739\`
+
+| Key | Default |
+| --- | --- |
+| port | 7739 |
+\`\`\`
+
+And the config file:
+
+\`\`\`toml
+[server]
+port = 7739
+token = "secret"
+\`\`\`
+
+The test log:
+
+\`\`\`
+bun test v1.3.14
+ ✓ projection > batches reads [2.1ms]
+ ✓ projection > caches for 250ms [0.4ms]
+ ✗ timeline > folds consecutive messages [1.0ms]
+   expected "…done.\\n\\nNext…" to equal "…done.Next…"
+ 2 pass, 1 fail
+\`\`\`
+
+The numbers, as CSV:
+
+\`\`\`csv
+file,change,adds,dels
+server.ts,modified,104,12
+src/ChatMarkdown.tsx,modified,28,20
+"public/app.css",modified,101,8
+\`\`\`
+
+The full server log:
+
+\`\`\`log
+${Array.from({ length: 56 }, (_, i) => `2026-10-21T11:${String(14 + Math.floor(i / 6)).padStart(2, "0")}:${String((i * 7) % 60).padStart(2, "0")}Z ${i % 9 === 4 ? "WARN" : "INFO"} poll tick=${i} threads=${3 + (i % 4)} took=${(1.2 + (i % 5) * 0.3).toFixed(1)}ms`).join("\n")}
+\`\`\`
+
+\`\`\`sql
+SELECT id, title FROM threads WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 20;
+\`\`\`
+
+Footnotes work too.[^1]
+
+[^1]: GitHub-flavored Markdown footnotes.`;
+
+export const markdownShowcaseBlocks: Block[] = [
+  { kind: "user", text: "Draft the release notes and show me the files you touched." },
+  { kind: "assistant", text: markdownShowcase, open: false },
+  { kind: "footer", text: "" },
+];

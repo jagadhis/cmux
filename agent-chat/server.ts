@@ -20,13 +20,15 @@ import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, tr
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
 import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, T3_INTERACTION_MODES, T3_RUNTIME_MODES, t3Adapter, t3BackgroundWork, t3ModelCatalog, t3ModelSelection, t3Projects, t3ThreadAction, t3Usage } from "./adapters/t3";
 import type { T3BackgroundWork, T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
-import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, type GhosttyTheme } from "./theme";
+import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, schemeVars, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
 import { discoverHarnesses } from "./harnesses";
 import type { HarnessRecommendation } from "./harness-contract";
 import { harnessCatalogs } from "./harness-messages";
 import { gitHubSlugFromRemoteURL } from "./src/githubReferences";
+import { isGitHubLink, isWorkspaceId } from "./src/threadLinks";
 import { cmuxRpc } from "./cmux-rpc";
+import { localImageResponse, t3AttachmentResponse } from "./media";
 import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -121,12 +123,8 @@ const ROOT = import.meta.dir;
 
 /// A GitHub link to open beside a task's chat, or null when the request isn't one.
 export function openLinkTarget(url: unknown, workspaceId: unknown): { url: string; workspaceId: string } | null {
-  if (typeof url !== "string" || typeof workspaceId !== "string") return null;
-  if (!/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(workspaceId)) return null;
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { return null; }
-  if (parsed.protocol !== "https:" || (parsed.hostname !== "github.com" && parsed.hostname !== "www.github.com")) return null;
-  return { url: parsed.toString(), workspaceId };
+  if (typeof url !== "string" || !isWorkspaceId(workspaceId) || !isGitHubLink(url)) return null;
+  return { url: new URL(url).toString(), workspaceId };
 }
 const DEFAULT_CWD = `${ROOT}/scratch`;
 const ICON_ROOT = resolve(ROOT, "../Assets.xcassets/AgentIcons");
@@ -293,6 +291,8 @@ function sessionSummary(s: Session) {
       request: (s.internal.t3Request as T3PendingRequest | null) ?? null,
       t3Model: t3ModelSelection(s),
       t3Background: t3BackgroundWork(s),
+      t3Connection: (s.internal.t3Connection as string | null | undefined) ?? null,
+      t3Synced: s.internal.t3Synced === true,
     } : {}),
   };
 }
@@ -445,6 +445,12 @@ function createSession(
     resetHistory() {
       resetSessionHistory(sess);
     },
+    replaceHistory(events: AgentEvent[]) {
+      replaceSessionHistory(sess, events);
+    },
+    emitAll(events: AgentEvent[]) {
+      emitSessionEvents(sess, events);
+    },
     setStatus(status: SessionStatus) {
       const pendingDone = sess.internal.pendingDoneEmit as Promise<void> | undefined;
       if (status === "idle" && pendingDone) {
@@ -478,13 +484,44 @@ function emitRouting(
 }
 
 function emitSessionEvent(sess: Session, evt: AgentEvent) {
+  storeSessionEvent(sess, evt);
+  broadcastSessionEvent(sess, evt);
+}
+
+/** Emits several events in one message. A deferred `done` (one with a turn
+ * generation) waits for its files, so a batch with one goes event by event. */
+function emitSessionEvents(sess: Session, events: AgentEvent[]) {
+  if (events.some((evt) => evt.kind === "done" && typeof (evt as InternalDoneEvent).generation === "number")) {
+    for (const evt of events) sess.emit(evt);
+    return;
+  }
+  if (!events.length) return;
+  for (const evt of events) storeSessionEvent(sess, evt);
+  const payload = JSON.stringify({ kind: "events", sessionId: sess.id, events });
+  for (const ws of sess.sockets) ws.send(payload);
+}
+
+function storeSessionEvent(sess: Session, evt: AgentEvent) {
   const generation = currentAttributionGeneration(sess);
   const generations = eventGenerations(sess);
   recordSessionEventSideEffects(sess, evt);
+  if (coalesceStreamedText(sess.events, generations, evt, generation)) return;
   sess.events.push(evt);
   generations.push(generation);
   capSessionEvents(sess);
-  broadcastSessionEvent(sess, evt);
+}
+
+/** Streamed text arrives as many small deltas (T3 sends one per 120 ms), and
+ * the event cap would drop the start of a long reply. Consecutive deltas, or
+ * consecutive thinking, fold into the same open block anyway, so the history
+ * keeps them as one event. Open views still get each delta. */
+export function coalesceStreamedText(events: AgentEvent[], generations: number[], evt: AgentEvent, generation: number): boolean {
+  if (evt.kind !== "delta" && evt.kind !== "thinking") return false;
+  const index = events.length - 1;
+  const last = events[index];
+  if (!last || last.kind !== evt.kind || generations[index] !== generation) return false;
+  events[index] = { kind: evt.kind, text: last.text + evt.text };
+  return true;
 }
 
 function recordSessionEventSideEffects(sess: Session, evt: AgentEvent) {
@@ -533,6 +570,15 @@ function broadcastSessionHistory(sess: Session) {
 export function resetSessionHistory(sess: Session) {
   sess.events.length = 0;
   delete sess.internal.eventGenerations;
+  broadcastSessionHistory(sess);
+}
+
+/** Replaces the history in one `history` message, so open views redraw once
+ * instead of clearing and then taking each event. */
+export function replaceSessionHistory(sess: Session, events: AgentEvent[]) {
+  sess.events.length = 0;
+  delete sess.internal.eventGenerations;
+  for (const evt of events) storeSessionEvent(sess, evt);
   broadcastSessionHistory(sess);
 }
 
@@ -838,7 +884,8 @@ function ensureT3Session(threadId: string): Session {
   const sess = createSession("claude", DEFAULT_CWD, false, "T3 thread", {}, {}, { id, adapter: t3Adapter });
   sess.transcript = { agent: "claude", path: `t3:${threadId}` };
   sess.internal.t3Request = null;
-  let lastError = "";
+  sess.internal.t3Connection = null;
+  sess.internal.t3Synced = false;
   attachT3Thread(sess, threadId, {
     onTitle(title) {
       if (!title || sess.title === title) return;
@@ -870,9 +917,16 @@ function ensureT3Session(threadId: string): Session {
       const payload = JSON.stringify({ kind: "session-t3-background", sessionId: sess.id, background: work });
       for (const ws of sess.sockets) ws.send(payload);
     },
+    onConnection(problem) {
+      // A passing state like `attention`, not a transcript event: it clears once T3 is back.
+      const synced = sess.internal.t3Synced === true || problem === null;
+      if ((sess.internal.t3Connection ?? null) === problem && sess.internal.t3Synced === synced) return;
+      sess.internal.t3Connection = problem;
+      sess.internal.t3Synced = synced;
+      const payload = JSON.stringify({ kind: "session-t3-connection", sessionId: sess.id, connection: problem, synced });
+      for (const ws of sess.sockets) ws.send(payload);
+    },
     onError(message) {
-      if (message === lastError) return;
-      lastError = message;
       sess.emit({ kind: "error", message });
     },
   });
@@ -1651,6 +1705,10 @@ export function emitSessionEventForTest(sess: Session, evt: AgentEvent) {
   emitSessionEvent(sess, evt);
 }
 
+export function emitSessionEventsForTest(sess: Session, events: AgentEvent[]) {
+  emitSessionEvents(sess, events);
+}
+
 export function emitDoneAfterFilesForTest(sess: Session, evt: Extract<AgentEvent, { kind: "done" }>) {
   emitDoneAfterFiles(sess, evt);
 }
@@ -1862,6 +1920,7 @@ export function themeVarMap(theme: GhosttyTheme, opts: { transparent?: boolean; 
     "--amber": theme.palette[3],
     "--selection-background": theme.selectionBackground ?? theme.palette[4],
     "--cursor-color": theme.cursorColor ?? theme.foreground,
+    ...schemeVars(theme),
     ...resolvedFontValues(theme),
   };
   for (const [i, color] of theme.palette.entries()) {
@@ -2248,6 +2307,11 @@ function startServer() {
         : new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname.startsWith("/icons/")) return iconResponse(url);
+    // Pasted images and `html_render` pages in T3 chats, by attachment id.
+    const attachment = url.pathname.match(/^\/api\/t3\/attachments\/([^/?#]{1,256})$/);
+    if (attachment && req.method === "GET") return t3AttachmentResponse(attachment[1]);
+    // Local images a reply embeds with Markdown.
+    if (url.pathname === "/api/local-image" && req.method === "GET") return localImageResponse(req, url.searchParams.get("path"));
     if (url.pathname === "/app.js" || url.pathname === "/gallery.js" || /^\/chunk-[\w-]+\.js$/.test(url.pathname)) {
       try {
         const asset = (await buildBundles()).get(url.pathname);
@@ -2307,19 +2371,6 @@ function startServer() {
       if (prompt) sendPrompt(sess, prompt);
       return Response.json({ id: sess.id, url: `http://127.0.0.1:${server.port}${prefixedPath(`/s/${sess.id}`)}` });
     }
-    if (url.pathname === "/api/t3/threads" && req.method === "POST") {
-      try {
-        const body = (await req.json()) as { projectId?: unknown; text?: unknown; runtimeMode?: unknown };
-        const runtimeMode = oneOf(body.runtimeMode, T3_RUNTIME_MODES);
-        if (typeof body.projectId !== "string" || typeof body.text !== "string") {
-          return Response.json({ error: "projectId and text are required" }, { status: 400 });
-        }
-        const { threadId } = await launchT3Thread({ projectId: body.projectId, text: body.text, runtimeMode });
-        return Response.json({ threadId, path: prefixedPath(`/t3/${encodeURIComponent(threadId)}`) });
-      } catch (err) {
-        return Response.json({ error: safeErrorMessage("t3-launch", err) }, { status: 502 });
-      }
-    }
     // cmux Agent Home: provider limits and spend, as T3's Usage page reads them.
     if (url.pathname === "/api/t3/usage" && req.method === "GET") {
       const day = /^\d{4}-\d{2}-\d{2}$/;
@@ -2355,6 +2406,8 @@ function startServer() {
     // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
     const t3Action = url.pathname.match(/^\/api\/t3\/threads\/([^/?#]{8,1600})\/(settle|unsettle|visit)$/);
     if (t3Action && req.method === "POST") {
+      // cmux posts without an Origin; a page on another origin may not.
+      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
       let threadId = "";
       try { threadId = decodeURIComponent(t3Action[1]); } catch { /* malformed escape */ }
       if (!isT3ThreadId(threadId)) return Response.json({ error: "Not a T3 thread id" }, { status: 404 });
@@ -2664,7 +2717,11 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
       const sess = sessions.get(String(msg.sessionId));
       if (!sess?.internal.t3) return;
       const requestId = String(msg.requestId);
-      const fail = (err: unknown) => sess.emit({ kind: "error", message: safeErrorMessage("respond", err) });
+      const fail = (err: unknown) => {
+        sess.emit({ kind: "error", message: safeErrorMessage("respond", err) });
+        // The page hid the card when it sent the answer; put back what T3 still waits on.
+        ws.send(JSON.stringify({ kind: "session-request", sessionId: sess.id, request: (sess.internal.t3Request as T3PendingRequest | null) ?? null }));
+      };
       if (msg.dismiss === true) {
         dismissT3Question(sess, requestId).catch(fail);
       } else if (msg.answers && typeof msg.answers === "object") {

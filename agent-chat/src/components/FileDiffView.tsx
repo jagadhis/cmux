@@ -20,5 +20,5 @@ export function FileDiffView({ diff, error, onRequest }: {
     </div>;
   }
   if (diff === undefined) return <div className="diff-loading" role="status">{agentChatText("loadingDiff")}</div>;
-  return <MarkdownCodeBlock code={diff} lang="diff" />;
+  return <MarkdownCodeBlock code={diff} lang="diff" collapsible={false} />;
 }

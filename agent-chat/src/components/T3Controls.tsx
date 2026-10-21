@@ -2,8 +2,8 @@
 // and reasoning, and the card for questions the agent asks. Both are T3
 // commands, so a change here shows in T3 and a change in T3 shows here.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { T3Answers, T3ModelOption, T3ModelProvider, T3ModelSelection, T3Question, T3Request } from "../session";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { T3Answers, T3FullSelection, T3ModelOption, T3ModelProvider, T3ModelSelection, T3Question, T3Request } from "../session";
 import { CmdkMenu, type CmdkGroup } from "./CmdkMenu";
 import { BarsIcon, BoltIcon, Check, Chevron, ProviderIcon } from "./icons";
 import { HintTooltip } from "./Tooltips";
@@ -53,25 +53,28 @@ function carriedOptions(selection: T3ModelSelection | null | undefined, next: T3
   return carried;
 }
 
-type FullSelection = T3ModelSelection & { instanceId: string; model: string };
+/** The selection when it names both a provider instance and a model, as T3 commands need. */
+export function fullSelection(selection: T3ModelSelection | null | undefined): T3FullSelection | null {
+  return selection?.instanceId && selection.model ? (selection as T3FullSelection) : null;
+}
 
-function withOption(selection: FullSelection, id: string, value: string | boolean): FullSelection {
+function withOption(selection: T3FullSelection, id: string, value: string | boolean): T3FullSelection {
   const options = (selection.options ?? []).filter((o) => o.id !== id);
   return { ...selection, options: [...options, { id, value }] };
 }
 
-export function T3ModelControls({
+// Memoized: the composer re-renders on every keystroke and streamed event.
+// The row's dot shows a running thread, so the trigger doesn't pulse too.
+export const T3ModelControls = memo(function T3ModelControls({
   selection,
   catalog,
-  running,
   onLoad,
   onChange,
 }: {
   selection: T3ModelSelection | null | undefined;
   catalog: T3ModelProvider[] | null;
-  running: boolean;
   onLoad(): void;
-  onChange(selection: T3ModelSelection & { instanceId: string; model: string }): void;
+  onChange(selection: T3FullSelection): void;
 }) {
   const [open, setOpen] = useState<"model" | "reasoning" | null>(null);
   useEffect(() => { if (!catalog) onLoad(); }, [catalog, onLoad]);
@@ -104,7 +107,7 @@ export function T3ModelControls({
     }));
   }, [catalog, onChange, selection]);
 
-  const current = selection?.instanceId && selection.model ? (selection as T3ModelSelection & { instanceId: string; model: string }) : null;
+  const current = fullSelection(selection);
   const reasoningValue = reasoning ? String(selectedValue(selection, reasoning) ?? "") : "";
   const reasoningChoices = reasoning?.choices ?? [];
   const reasoningIndex = Math.max(0, reasoningChoices.findIndex((c) => c.id === reasoningValue));
@@ -122,7 +125,7 @@ export function T3ModelControls({
             }}
             className="t3-model-menu"
             trigger={
-              <button type="button" className={"row-control provider-model-trigger select-trigger" + (running ? " provider-running" : "")} aria-label={T3_CONTROLS_TEXT.changeModel}>
+              <button type="button" className="row-control provider-model-trigger select-trigger" aria-label={T3_CONTROLS_TEXT.changeModel}>
                 {provider ? <ProviderIcon provider={iconProvider(provider)} /> : null}
                 <span className="row-value">{label}</span>
                 <span className="chev"><Chevron /></span>
@@ -175,7 +178,7 @@ export function T3ModelControls({
       ) : null}
     </div>
   );
-}
+});
 
 // MARK: - Questions
 

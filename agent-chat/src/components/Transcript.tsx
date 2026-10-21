@@ -1,16 +1,17 @@
 import { Popover } from "@base-ui-components/react/popover";
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { Block, ChangedFile, SessionActions } from "../session";
 import { fileDiffCacheKey } from "../session";
 import { agentChatText } from "../i18n";
 import { FileDiffView } from "./FileDiffView";
 import { activityIndicatorState, activityTailKey } from "../activity";
 import { ChatMarkdown, MarkdownCodeBlock } from "../ChatMarkdown";
+import { HtmlRenderFrame, MessageImages } from "./Media";
 import { useActivityStartedAt, useTicker } from "../hooks/useTicker";
 import { useVirtualTurns } from "../hooks/useVirtualTurns";
 import { Check, Chevron, CopyIcon, EllipsisIcon, PinwheelSpinner } from "./icons";
 import { HintTooltip } from "./Tooltips";
-import { activityRowLabel, groupTurns, summarizeTurnActivity, type TurnGroup } from "../turns";
+import { activityRowLabel, groupTurns, sameTurnGroup, summarizeTurnActivity, type TurnGroup } from "../turns";
 
 export type ToolBlockVariant = "card" | "inline" | "rail" | "oneliner" | "terminal";
 export const TOOL_BLOCK_VARIANT: ToolBlockVariant = "inline";
@@ -316,18 +317,18 @@ const diffStatStyle: CSSProperties = {
 };
 
 const diffAddsStyle: CSSProperties = {
-  color: "#2f9e44",
+  color: "var(--green-text)",
 };
 
 const diffDelsStyle: CSSProperties = {
-  color: "#d64545",
+  color: "var(--red-text)",
 };
 
 const filesChangedContainerStyle: CSSProperties = {
   overflow: "hidden",
-  border: "1px solid rgba(128, 128, 128, 0.22)",
+  border: "1px solid var(--border)",
   borderRadius: 8,
-  background: "rgba(128, 128, 128, 0.04)",
+  background: "var(--bg-raised)",
 };
 
 const filesHeaderStyle: CSSProperties = {
@@ -336,8 +337,8 @@ const filesHeaderStyle: CSSProperties = {
   justifyContent: "space-between",
   gap: 8,
   padding: "7px 8px",
-  borderBottom: "1px solid rgba(128, 128, 128, 0.16)",
-  background: "rgba(128, 128, 128, 0.06)",
+  borderBottom: "1px solid var(--border)",
+  background: "var(--bg-raised)",
 };
 
 const filesHeaderLeftStyle: CSSProperties = {
@@ -358,8 +359,8 @@ const filesGlyphStyle: CSSProperties = {
   justifyContent: "center",
   flexShrink: 0,
   borderRadius: 4,
-  background: "rgba(128, 128, 128, 0.12)",
-  color: "rgba(128, 128, 128, 0.95)",
+  background: "var(--bg-hover)",
+  color: "var(--text-dim)",
   fontFamily: monoFont,
   fontSize: 11,
   lineHeight: "16px",
@@ -373,7 +374,7 @@ const filesTitleStyle: CSSProperties = {
 const filesSummaryTextStyle: CSSProperties = {
   minWidth: 0,
   overflow: "hidden",
-  color: "rgba(128, 128, 128, 0.95)",
+  color: "var(--text-dim)",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
@@ -381,9 +382,9 @@ const filesSummaryTextStyle: CSSProperties = {
 const filesViewDiffButtonStyle: CSSProperties = {
   flexShrink: 0,
   appearance: "none",
-  border: "1px solid rgba(128, 128, 128, 0.28)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
-  background: "rgba(128, 128, 128, 0.08)",
+  background: "var(--bg-input)",
   color: "inherit",
   cursor: "pointer",
   font: "inherit",
@@ -407,8 +408,7 @@ const filesFileRowStyle: CSSProperties = {
   appearance: "none",
   border: 0,
   borderRadius: 6,
-  background: "transparent",
-  color: "inherit",
+  // Background and color come from .files-file-row so its :hover can apply.
   cursor: "pointer",
   font: "inherit",
   lineHeight: "18px",
@@ -426,7 +426,7 @@ const filesPathTextStyle: CSSProperties = {
 };
 
 const filesDirPrefixStyle: CSSProperties = {
-  color: "rgba(128, 128, 128, 0.82)",
+  color: "var(--text-faint)",
 };
 
 const filesBasenameStyle: CSSProperties = {
@@ -614,7 +614,7 @@ const activityCaretStyle: CSSProperties = {
   height: 16,
   alignItems: "center",
   justifyContent: "center",
-  color: "rgba(128, 128, 128, 0.9)",
+  color: "var(--text-faint)",
 };
 
 const activityRowContentStyle: CSSProperties = {
@@ -870,6 +870,36 @@ function TurnActivity({
   );
 }
 
+interface TurnGroupViewProps {
+  group: TurnGroup;
+  status?: string;
+  actions: SessionActions;
+  onFork: () => void;
+  forkPending: boolean;
+  onHandoff?: () => void;
+  handoffPending?: boolean;
+  fileDiffs: Record<string, string>;
+  fileDiffErrors: Record<string, string>;
+  onFileDiff: (path: string) => void;
+  thinkingDefaultOpen: boolean;
+  expandedTurns: Record<string, boolean>;
+  setExpandedTurns: (next: Record<string, boolean>) => void;
+  expandedItems: Record<string, boolean>;
+  setExpandedItems: (next: Record<string, boolean>) => void;
+}
+
+/** While a reply streams only the last turn changes; the others skip rendering. */
+function turnGroupPropsEqual(prev: TurnGroupViewProps, next: TurnGroupViewProps): boolean {
+  const keys = Object.keys(next) as (keyof TurnGroupViewProps)[];
+  if (keys.length !== Object.keys(prev).length) return false;
+  return keys.every((key) => key === "group" ? sameTurnGroup(prev.group, next.group) : prev[key] === next[key]);
+}
+
+const MemoTurnGroupView = memo(TurnGroupView, turnGroupPropsEqual);
+
+const NO_FILE_DIFFS: Record<string, string> = {};
+const ignoreFileDiff = () => {};
+
 function TurnGroupView({
   group,
   status,
@@ -886,27 +916,18 @@ function TurnGroupView({
   setExpandedTurns,
   expandedItems,
   setExpandedItems,
-}: {
-  group: TurnGroup;
-  status?: string;
-  actions: SessionActions;
-  onFork: () => void;
-  forkPending: boolean;
-  onHandoff?: () => void;
-  handoffPending?: boolean;
-  fileDiffs: Record<string, string>;
-  fileDiffErrors: Record<string, string>;
-  onFileDiff: (path: string) => void;
-  thinkingDefaultOpen: boolean;
-  expandedTurns: Record<string, boolean>;
-  setExpandedTurns: (next: Record<string, boolean>) => void;
-  expandedItems: Record<string, boolean>;
-  setExpandedItems: (next: Record<string, boolean>) => void;
-}) {
+}: TurnGroupViewProps) {
   const live = status === "running" && !group.done;
   return (
     <div className="turn-group">
-      {group.user ? <div className="msg user"><div className="body selectable">{group.user.text}</div></div> : null}
+      {group.user ? (
+        <div className="msg user">
+          <div className="msg-user-stack">
+            {group.user.images?.length ? <MessageImages images={group.user.images} /> : null}
+            {group.user.text.trim() || !group.user.images?.length ? <div className="body selectable">{group.user.text}</div> : null}
+          </div>
+        </div>
+      ) : null}
       {group.messages?.map((message) => <AgentMessageRow key={message.id} message={message} />)}
       {live
         ? group.activity.map((block, i) => (
@@ -930,6 +951,9 @@ function TurnGroupView({
             thinkingDefaultOpen={thinkingDefaultOpen}
           />
         )}
+      {group.artifacts?.map((block) => (
+        <div className="msg artifact" key={block.artifact.id}><HtmlRenderFrame artifact={block.artifact} /></div>
+      ))}
       {group.assistant ? <div className="msg assistant"><div className="body selectable"><ChatMarkdown text={group.assistant.text} streaming={group.assistant.open} /></div></div> : null}
       {group.footer ? <TurnActions stats={group.footer.text} text={group.assistant?.text ?? ""} actions={actions} onFork={onFork} forkPending={forkPending} onHandoff={onHandoff} handoffPending={handoffPending} /> : null}
     </div>
@@ -944,9 +968,9 @@ export function Blocks({
   forkPending,
   onHandoff,
   handoffPending,
-  fileDiffs = {},
-  fileDiffErrors = {},
-  onFileDiff = () => {},
+  fileDiffs = NO_FILE_DIFFS,
+  fileDiffErrors = NO_FILE_DIFFS,
+  onFileDiff = ignoreFileDiff,
   thinkingDefaultOpen = false,
   initialExpandedTurns = {},
   initialExpandedItems = {},
@@ -983,7 +1007,7 @@ export function Blocks({
         const index = start + offset;
         return (
           <div className="turn-virtual-row" key={group.id} ref={virtual.measure(index)}>
-            <TurnGroupView
+            <MemoTurnGroupView
               group={group}
               status={status}
               actions={actions}

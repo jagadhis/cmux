@@ -21,3 +21,11 @@ export const RepositorySlugContext = createContext<string | null>(null);
 export function useRepositorySlug(): string | null {
   return useContext(RepositorySlugContext);
 }
+
+/// The session's working directory, which relative image paths in replies
+/// resolve against. Its own context for the same reason as the slug above.
+export const SessionCwdContext = createContext<string | null>(null);
+
+export function useSessionCwd(): string | null {
+  return useContext(SessionCwdContext);
+}

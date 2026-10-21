@@ -51,5 +51,30 @@ export function isGitHubLink(href: string | null | undefined): boolean {
 /// The cmux workspace a chat page belongs to, when cmux opened it as a task.
 export function chatWorkspaceId(search: string): string | null {
   const id = new URLSearchParams(search).get("workspace");
-  return id && /^[0-9A-Fa-f-]{36}$/.test(id) ? id : null;
+  return isWorkspaceId(id) ? id : null;
+}
+
+/// Whether a value is a cmux workspace id (a UUID). The sidecar checks the same.
+export function isWorkspaceId(id: unknown): id is string {
+  return typeof id === "string" && /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(id);
+}
+
+/// Opens a GitHub link in a browser beside the chat, in the same cmux task.
+/// Returns false when the chat isn't a cmux task, so the link opens as usual.
+export function openBesideChat(href: string, base: string): boolean {
+  const workspaceId = typeof location === "undefined" ? null : chatWorkspaceId(location.search);
+  if (!workspaceId || !isGitHubLink(href)) return false;
+  void fetch(`${base}/api/open-link`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: href, workspaceId }),
+  })
+    .then((response) => { if (!response.ok) throw new Error(String(response.status)); })
+    .catch(() => { window.open(href, "_blank", "noopener"); });
+  return true;
+}
+
+/// Opens a link a framed page asked the chat to open, as a click on a link in a reply would.
+export function openChatLink(href: string, base: string) {
+  if (!openBesideChat(href, base)) window.open(href, "_blank", "noopener");
 }

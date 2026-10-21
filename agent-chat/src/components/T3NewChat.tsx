@@ -5,11 +5,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useCtx } from "../context";
-import type { T3ModelProvider, T3ModelSelection, T3Project } from "../session";
+import type { T3FullSelection, T3ModelProvider, T3Project } from "../session";
 import { CmdkMenu } from "./CmdkMenu";
 import { isCtrlJ, insertNewlineAtCaret } from "./CommandMenu";
 import { ArrowUp, FolderIcon, PinwheelSpinner, PlanIcon, ShieldIcon } from "./icons";
-import { T3ModelControls } from "./T3Controls";
+import { fullSelection, T3ModelControls } from "./T3Controls";
 import { HintTooltip } from "./Tooltips";
 import { useAutoGrow } from "../hooks/useAutoGrow";
 
@@ -32,14 +32,8 @@ const RUNTIME_MODES: { id: string; label: string; description: string }[] = [
   { id: "approval-required", label: "Ask first", description: "Asks before every edit and command" },
 ];
 
-type FullSelection = T3ModelSelection & { instanceId: string; model: string };
-
-function fullSelection(selection: T3ModelSelection | null | undefined): FullSelection | null {
-  return selection?.instanceId && selection.model ? (selection as FullSelection) : null;
-}
-
 /** T3's default model, for a project with no default and no earlier threads. */
-function catalogDefault(catalog: T3ModelProvider[] | null): FullSelection | null {
+function catalogDefault(catalog: T3ModelProvider[] | null): T3FullSelection | null {
   for (const provider of catalog ?? []) {
     const model = provider.models.find((m) => m.isDefault);
     if (model) return { instanceId: provider.instanceId, model: model.slug };
@@ -54,7 +48,7 @@ export function T3NewChat() {
   const [text, setText] = useState(() => params.get("text") ?? "");
   const [projectId, setProjectId] = useState(() => params.get("project") ?? "");
   // Settings the user picked; until then they follow the project's defaults.
-  const [model, setModel] = useState<FullSelection | null>(null);
+  const [model, setModel] = useState<T3FullSelection | null>(null);
   const [runtimeMode, setRuntimeMode] = useState<string | null>(null);
   const [interactionMode, setInteractionMode] = useState<string | null>(null);
   const [open, setOpen] = useState<"project" | "access" | null>(null);
@@ -80,7 +74,11 @@ export function T3NewChat() {
     if (project && project.id !== projectId) setProjectId(project.id);
   }, [project, projectId]);
 
-  const selection = model ?? fullSelection(project?.defaults.modelSelection) ?? (project ? catalogDefault(t3Models) : null);
+  // Memoized so the model controls keep the same selection between keystrokes.
+  const selection = useMemo(
+    () => model ?? fullSelection(project?.defaults.modelSelection) ?? (project ? catalogDefault(t3Models) : null),
+    [model, project, t3Models],
+  );
   const access = runtimeMode ?? project?.defaults.runtimeMode ?? "full-access";
   const plan = (interactionMode ?? project?.defaults.interactionMode) === "plan";
   const accessInfo = RUNTIME_MODES.find((m) => m.id === access) ?? RUNTIME_MODES[0];
@@ -155,7 +153,6 @@ export function T3NewChat() {
           <T3ModelControls
             selection={selection}
             catalog={t3Models}
-            running={false}
             onLoad={requestT3Models}
             onChange={setModel}
           />

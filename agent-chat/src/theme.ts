@@ -25,4 +25,19 @@ export function applyThemeVars(
     next["--bg-html"] = transparent ? "transparent" : theme.background;
   }
   for (const [key, value] of Object.entries(next)) root.setProperty(key, value);
+  themeRevision += 1;
+  for (const listener of themeListeners) listener();
+}
+
+// Framed pages follow the chat's theme; they re-read it when this changes.
+let themeRevision = 0;
+const themeListeners = new Set<() => void>();
+
+export function subscribeThemeChanges(listener: () => void): () => void {
+  themeListeners.add(listener);
+  return () => themeListeners.delete(listener);
+}
+
+export function currentThemeRevision(): number {
+  return themeRevision;
 }

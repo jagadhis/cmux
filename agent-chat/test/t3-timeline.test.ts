@@ -200,4 +200,91 @@ describe("T3Timeline", () => {
     expect(step.background).toBeNull();
     expect(step.backgroundStop).toBeUndefined();
   });
+
+  test("consecutive assistant messages start a new paragraph instead of running together", () => {
+    const timeline = new T3Timeline();
+    const first = timeline.step(projection({
+      turnItems: [
+        { id: "a1", runId: "r1", ordinal: 1, status: "completed", type: "assistant_message", text: "Checked the relay; done." },
+        { id: "a2", runId: "r1", ordinal: 2, status: "running", type: "assistant_message", text: "Next" },
+      ],
+    }));
+    expect(first.events.slice(1)).toEqual([
+      { kind: "delta", text: "Checked the relay; done." },
+      { kind: "delta", text: "\n\nNext" },
+    ]);
+    // The second message keeps streaming into its own paragraph, and a later
+    // step that starts a third message separates it too.
+    const second = timeline.step(projection({
+      turnItems: [
+        { id: "a1", runId: "r1", ordinal: 1, status: "completed", type: "assistant_message", text: "Checked the relay; done." },
+        { id: "a2", runId: "r1", ordinal: 2, status: "completed", type: "assistant_message", text: "Next, the deploy." },
+        { id: "a3", runId: "r1", ordinal: 3, status: "running", type: "assistant_message", text: "Shipped." },
+      ],
+    }));
+    expect(second.events).toEqual([{ kind: "delta", text: ", the deploy." }, { kind: "delta", text: "\n\nShipped." }]);
+  });
+
+  test("a tool ending between two messages still separates them", () => {
+    // The page leaves the open text block open when a tool ends, so without the
+    // break the second message would read "Launched it.It finished."
+    const timeline = new T3Timeline();
+    timeline.step(projection({
+      turnItems: [
+        { id: "t1", runId: "r1", ordinal: 1, status: "running", type: "command_execution", input: "deploy" },
+        { id: "a1", runId: "r1", ordinal: 2, status: "completed", type: "assistant_message", text: "Launched it." },
+      ],
+    }));
+    const next = timeline.step(projection({
+      turnItems: [
+        { id: "t1", runId: "r1", ordinal: 1, status: "completed", type: "command_execution", input: "deploy" },
+        { id: "a1", runId: "r1", ordinal: 2, status: "completed", type: "assistant_message", text: "Launched it." },
+        { id: "a2", runId: "r1", ordinal: 3, status: "running", type: "assistant_message", text: "It finished." },
+      ],
+    }));
+    expect(next.events).toEqual([{ kind: "tool-end", toolId: "t1", ok: true }, { kind: "delta", text: "\n\nIt finished." }]);
+  });
+
+  test("text after a tool or of another kind needs no separator", () => {
+    const step = new T3Timeline().step(projection({
+      turnItems: [
+        { id: "a1", runId: "r1", ordinal: 1, status: "completed", type: "assistant_message", text: "Running tests." },
+        { id: "t1", runId: "r1", ordinal: 2, status: "completed", type: "command_execution", input: "bun test" },
+        { id: "a2", runId: "r1", ordinal: 3, status: "completed", type: "assistant_message", text: "All green." },
+        { id: "k1", runId: "r1", ordinal: 4, status: "completed", type: "reasoning", text: "Anything else?" },
+        { id: "a3", runId: "r1", ordinal: 5, status: "running", type: "assistant_message", text: "No." },
+      ],
+    }));
+    expect(step.events.slice(1)).toEqual([
+      { kind: "delta", text: "Running tests." },
+      { kind: "tool-start", toolId: "t1", name: "Bash", detail: "bun test" },
+      { kind: "tool-end", toolId: "t1", ok: true },
+      { kind: "delta", text: "All green." },
+      { kind: "thinking", text: "Anything else?" },
+      { kind: "delta", text: "No." },
+    ]);
+  });
+
+  test("a finished run is skipped once settled, but still shows items that arrive later", () => {
+    const timeline = new T3Timeline();
+    const done = { id: "r1", ordinal: 1, status: "completed", userMessageId: "m1" };
+    const items = [{ id: "a1", runId: "r1", ordinal: 1, status: "completed", type: "assistant_message", text: "Done." }];
+    expect(timeline.step(projection({ runs: [done], turnItems: items })).events).toEqual([
+      { kind: "user", text: "Switch the relay" }, { kind: "delta", text: "Done." }, { kind: "done" },
+    ]);
+    expect(timeline.step(projection({ runs: [done], turnItems: items })).events).toEqual([]);
+    const late = timeline.step(projection({
+      runs: [done],
+      turnItems: [...items, { id: "n1", runId: "r1", ordinal: 2, status: "completed", type: "notification", summary: "PR merged" }],
+    }));
+    expect(late.events).toEqual([{ kind: "status", text: "PR merged" }]);
+  });
+
+  test("a tool still running after its run finished ends later", () => {
+    const timeline = new T3Timeline();
+    const done = { id: "r1", ordinal: 1, status: "completed", userMessageId: "m1" };
+    timeline.step(projection({ runs: [done], turnItems: [{ id: "c1", runId: "r1", ordinal: 1, status: "running", type: "command_execution", input: "watch" }] }));
+    const ended = timeline.step(projection({ runs: [done], turnItems: [{ id: "c1", runId: "r1", ordinal: 1, status: "completed", type: "command_execution", input: "watch" }] }));
+    expect(ended.events).toEqual([{ kind: "tool-end", toolId: "c1", ok: true }]);
+  });
 });

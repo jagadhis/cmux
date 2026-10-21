@@ -6,6 +6,8 @@ export interface TurnGroup {
   /** cmux agent messages the agent received for this turn. */
   messages?: Extract<Block, { kind: "message" }>[];
   activity: Block[];
+  /** Pages the agent published this turn, shown above its reply rather than folded into the activity. */
+  artifacts?: Extract<Block, { kind: "html" }>[];
   assistant?: Extract<Block, { kind: "assistant" }>;
   footer?: Extract<Block, { kind: "footer" }>;
   done: boolean;
@@ -24,7 +26,7 @@ export function groupTurns(blocks: Block[], status?: string): TurnGroup[] {
     }
   };
   const push = () => {
-    if (current && (current.user || current.messages?.length || current.activity.length || current.assistant || current.footer)) groups.push(current);
+    if (current && (current.user || current.messages?.length || current.activity.length || current.artifacts?.length || current.assistant || current.footer)) groups.push(current);
   };
   for (const block of blocks) {
     if (block.kind === "user") {
@@ -54,6 +56,8 @@ export function groupTurns(blocks: Block[], status?: string): TurnGroup[] {
       pendingAssistantIndex = current.activity.length;
     } else if (block.kind === "footer") {
       current.footer = block;
+    } else if (block.kind === "html") {
+      current.artifacts = [...(current.artifacts ?? []), block];
     } else {
       current.activity.push(block);
     }
@@ -66,6 +70,22 @@ export function groupTurns(blocks: Block[], status?: string): TurnGroup[] {
       (b.kind === "tool" && b.status === "running") || (b.kind === "assistant" && b.open)
     ))),
   }));
+}
+
+/** Whether two groupings of a turn show the same blocks. `groupTurns` makes new
+ * groups on every change but keeps the blocks that didn't change, so a turn
+ * whose blocks are all the same objects can skip rendering. */
+export function sameTurnGroup(a: TurnGroup, b: TurnGroup): boolean {
+  return a === b || (
+    a.id === b.id && a.done === b.done && a.user === b.user && a.assistant === b.assistant && a.footer === b.footer
+    && sameBlocks(a.activity, b.activity) && sameBlocks(a.messages, b.messages) && sameBlocks(a.artifacts, b.artifacts)
+  );
+}
+
+function sameBlocks(a: readonly Block[] | undefined, b: readonly Block[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a?.length || !b?.length) return !a?.length && !b?.length;
+  return a.length === b.length && a.every((block, index) => block === b[index]);
 }
 
 function plural(n: number, one: string, many = `${one}s`) {

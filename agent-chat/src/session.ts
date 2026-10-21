@@ -4,7 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { applyThemeVars } from "./theme";
 import { agentChatText } from "./i18n";
 import { openSessionConnection } from "./connection";
+import { createEventBatch, type EventBatch } from "./eventBatch";
 import type { HarnessRecommendation, HarnessCatalogs } from "../harness-contract";
+import type { T3Answers, T3BackgroundWork, T3Decision, T3FullSelection, T3LaunchInput, T3ModelProvider, T3ModelSelection, T3PendingRequest, T3Project } from "../t3-contract";
+import type { ChatImage, HtmlArtifact } from "../types";
+export type { ChatImage, HtmlArtifact } from "../types";
 import { latestRouteStatus, normalizeRouteStatus, type RouteHealth, type RoutePhase, type RouteStatus } from "../route-status";
 
 export type AgentEvent =
@@ -27,7 +31,7 @@ export type AgentEvent =
     }
   | { kind: "options"; options: SessionOption[]; actions?: SessionActions }
   | { kind: "commands"; trigger: CommandTrigger; commands: CommandEntry[] }
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: ChatImage[] }
   | { kind: "agent-message"; id: string; from: string; body: string }
   | { kind: "status"; text: string }
   | { kind: "plan"; entries: AgentPlanEntry[] }
@@ -38,6 +42,7 @@ export type AgentEvent =
   | { kind: "tool-end"; toolId: string; name?: string; detail?: string; ok?: boolean }
   | { kind: "done"; stats?: string }
   | { kind: "files-changed"; files: ChangedFile[] }
+  | { kind: "html-render"; artifact: HtmlArtifact }
   | { kind: "error"; message: string; prompt?: string };
 
 export type OptionKind = "select" | "toggle";
@@ -91,7 +96,8 @@ function nextFilesRevision(blocks: Block[]): string {
 }
 
 export type Block =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: ChatImage[] }
+  | { kind: "html"; artifact: HtmlArtifact }
   | { kind: "message"; id: string; from: string; body: string }
   | { kind: "assistant"; text: string; open: boolean }
   | { kind: "thinking"; text: string; open: boolean }
@@ -174,6 +180,10 @@ export interface SessionSummary {
   t3Model?: T3ModelSelection | null;
   /** Work the T3 thread still runs after its turn (subagents, commands, watches): T3's background banner. */
   t3Background?: T3BackgroundWork | null;
+  /** Why the T3 thread can't be read right now (T3 not running, token refused), or null. */
+  t3Connection?: string | null;
+  /** Set once the thread has been read; before that an empty chat is still loading. */
+  t3Synced?: boolean;
   /** What that agent is waiting on in the terminal (permission, question). */
   attention?: string | null;
   /** cmux agent messages waiting for that agent. */
@@ -182,63 +192,22 @@ export interface SessionSummary {
 
 export interface QueuedAgentMessage { id: string; from: string; body: string }
 
-export interface T3QuestionOption { label: string; description?: string; value?: string }
-export interface T3Question {
-  id: string;
-  header: string;
-  question: string;
-  options: T3QuestionOption[];
-  multiSelect?: boolean;
-  allowCustomAnswer?: boolean;
-  initialAnswer?: string;
-}
-export interface T3Request {
-  id: string;
-  kind: string;
-  title: string;
-  detail?: string;
-  isApproval: boolean;
-  questions?: T3Question[];
-  answerable?: boolean;
-  dismissible?: boolean;
-}
-export interface T3BackgroundWork {
-  title: string;
-  items: { taskId: string; kind: string; label: string; childThreadId?: string }[];
-  /** Subagents and monitors hold the thread until they end. */
-  waiting: boolean;
-}
-export type T3Decision = "accept" | "acceptForSession" | "decline";
-export type T3Answers = Record<string, string | string[]>;
-
-export interface T3ModelSelection { instanceId?: string; model?: string; options?: { id: string; value: string | boolean }[] }
-export interface T3ModelOption {
-  id: string;
-  label: string;
-  type: "select" | "boolean";
-  choices?: { id: string; label: string; description?: string; isDefault?: boolean }[];
-}
-export interface T3ModelProvider {
-  instanceId: string;
-  driver: string;
-  name: string;
-  models: { slug: string; name: string; isDefault?: boolean; options: T3ModelOption[] }[];
-}
-
-/** What a new T3 thread in a project starts with, unless the user picks otherwise. */
-export interface T3LaunchDefaults {
-  modelSelection: T3ModelSelection | null;
-  runtimeMode: string;
-  interactionMode: string;
-}
-export interface T3Project { id: string; name: string; root: string; defaults: T3LaunchDefaults }
-export interface T3LaunchInput {
-  projectId: string;
-  text: string;
-  model: T3ModelSelection & { instanceId: string; model: string };
-  runtimeMode: string;
-  interactionMode: string;
-}
+export type {
+  T3Answers,
+  T3BackgroundWork,
+  T3Decision,
+  T3FullSelection,
+  T3LaunchDefaults,
+  T3LaunchInput,
+  T3ModelOption,
+  T3ModelProvider,
+  T3ModelSelection,
+  T3Project,
+  T3Question,
+  T3QuestionOption,
+} from "../t3-contract";
+/** A T3 request waiting on the user: an approval card or a question card. */
+export type T3Request = T3PendingRequest;
 
 /** Whether a terminal-backed chat must be answered in the terminal itself. */
 export function transcriptComposerLocked(
@@ -261,7 +230,9 @@ export function foldEvent(blocks: Block[], evt: AgentEvent): Block[] {
   const last = blocks[blocks.length - 1];
   switch (evt.kind) {
     case "user":
-      return [...closeStreaming(blocks), { kind: "user", text: evt.text }];
+      return [...closeStreaming(blocks), evt.images?.length ? { kind: "user", text: evt.text, images: evt.images } : { kind: "user", text: evt.text }];
+    case "html-render":
+      return [...closeStreaming(blocks), { kind: "html", artifact: evt.artifact }];
     case "agent-message":
       return [...closeStreaming(blocks), { kind: "message", id: evt.id, from: evt.from, body: evt.body }];
     case "delta":
@@ -469,6 +440,11 @@ export function useSession(): SessionState {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [routing, setRouting] = useState<RouteStatus | null>(null);
   const [blocks, setBlocks] = useState<Block[]>([]);
+  // Streamed events fold into the transcript once per frame. A history that
+  // replaces the blocks drops what's queued; an update after them flushes it first.
+  const eventBatchRef = useRef<EventBatch<AgentEvent> | null>(null);
+  eventBatchRef.current ??= createEventBatch<AgentEvent>((events) => setBlocks((bs) => events.reduce(foldEvent, bs)));
+  const eventBatch = eventBatchRef.current;
   const [options, setOptions] = useState<SessionOption[]>([]);
   const [actions, setActions] = useState<SessionActions>({});
   const [commands, setCommands] = useState<CommandGroup[]>([]);
@@ -594,6 +570,7 @@ export function useSession(): SessionState {
     optimisticUsersRef.current = [];
     setSession(null);
     setRouting(null);
+    eventBatch.discard();
     setBlocks([]);
     setOptions([]);
     setActions({});
@@ -721,6 +698,7 @@ export function useSession(): SessionState {
             serverStatusRef.current = msg.session.status;
             setSession(msg.session);
             setRouting(latestRouteStatus(msg.events as AgentEvent[]));
+            eventBatch.discard();
             setBlocks((msg.events as AgentEvent[]).reduce(foldEvent, [] as Block[]));
             optimisticUsersRef.current = [];
             setOptions(latestOptions(msg.events as AgentEvent[]));
@@ -770,6 +748,15 @@ export function useSession(): SessionState {
               setSession((s) => (s ? { ...s, t3Background: msg.background && typeof msg.background === "object" ? msg.background : null } : s));
             }
             break;
+          case "session-t3-connection":
+            if (msg.sessionId === sessionIdRef.current) {
+              setSession((s) => (s ? {
+                ...s,
+                t3Connection: typeof msg.connection === "string" ? msg.connection : null,
+                t3Synced: msg.synced === true,
+              } : s));
+            }
+            break;
           case "session-t3-model":
             if (msg.sessionId === sessionIdRef.current) {
               setSession((s) => (s ? { ...s, t3Model: msg.model && typeof msg.model === "object" ? msg.model : null } : s));
@@ -817,22 +804,26 @@ export function useSession(): SessionState {
             }
             break;
           case "event":
+          // Several events at once (a T3 step); older servers send each as `event`.
+          case "events":
             if (msg.sessionId === sessionIdRef.current) {
-              const evt = msg.evt as AgentEvent;
-              if (evt.kind === "routing") setRouting(normalizeRouteStatus(evt));
-              if (evt.kind === "user" && consumeOptimisticUserEcho(optimisticUsersRef.current, evt.text)) {
-                break;
-              }
-              setBlocks((bs) => foldEvent(bs, evt));
-              if (evt.kind === "options") setOptions(evt.options);
-              if (evt.kind === "options") setActions(evt.actions ?? {});
-              if (evt.kind === "commands") setCommands((gs) => upsertCommands(gs, evt));
-              if (evt.kind === "error" && evt.prompt !== undefined) {
-                // The prompt never reached the terminal: its echo will not
-                // come, and the agent is as busy as the server last said.
-                consumeOptimisticUserEcho(optimisticUsersRef.current, evt.prompt);
-                const status = serverStatusRef.current ?? "idle";
-                setSession((s) => (s ? { ...s, status } : s));
+              const events = (msg.kind === "events" ? (Array.isArray(msg.events) ? msg.events : []) : [msg.evt]) as AgentEvent[];
+              for (const evt of events) {
+                if (evt.kind === "routing") setRouting(normalizeRouteStatus(evt));
+                if (evt.kind === "user" && consumeOptimisticUserEcho(optimisticUsersRef.current, evt.text)) {
+                  continue;
+                }
+                eventBatch.push(evt);
+                if (evt.kind === "options") setOptions(evt.options);
+                if (evt.kind === "options") setActions(evt.actions ?? {});
+                if (evt.kind === "commands") setCommands((gs) => upsertCommands(gs, evt));
+                if (evt.kind === "error" && evt.prompt !== undefined) {
+                  // The prompt never reached the terminal: its echo will not
+                  // come, and the agent is as busy as the server last said.
+                  consumeOptimisticUserEcho(optimisticUsersRef.current, evt.prompt);
+                  const status = serverStatusRef.current ?? "idle";
+                  setSession((s) => (s ? { ...s, status } : s));
+                }
               }
             }
             break;
@@ -981,6 +972,7 @@ export function useSession(): SessionState {
       startRequestId: requestId,
     });
     setRouting(null);
+    eventBatch.discard();
     setBlocks([{ kind: "user", text: opts.prompt }]);
     setOptions([]);
     setActions({});
@@ -1000,6 +992,7 @@ export function useSession(): SessionState {
     sessionIdRef.current = null;
     setRouting(null);
     setSession(null);
+    eventBatch.discard();
     setBlocks([]);
     setOptions([]);
     setActions({});
@@ -1017,6 +1010,7 @@ export function useSession(): SessionState {
     if (!sessionIdRef.current && pending && !pending.failed) {
       pending.queuedReplies.push({ requestId: newClientRequestId("turn"), prompt: text });
       optimisticUsersRef.current.push(text);
+      eventBatch.flush();
       setBlocks((bs) => [...closeStreaming(bs), { kind: "user", text }]);
       return true;
     }
@@ -1028,25 +1022,22 @@ export function useSession(): SessionState {
       // transcript records it; show it now and drop that echo when it lands.
       if (sessionModeRef.current === "transcript") {
         optimisticUsersRef.current.push(text);
+        eventBatch.flush();
         setBlocks((bs) => [...closeStreaming(bs), { kind: "user", text }]);
       }
       return true;
     }
     return false;
   }, [sendRaw, start]);
-  const respondRequest = useCallback((requestId: string, decision: T3Decision) => {
-    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, decision });
-    // Hide the card right away; the next T3 update confirms it.
+  /** Answers T3's pending request with a decision, answers, or a skip. The card
+   * hides right away; T3's next update confirms it, or the server puts it back. */
+  const resolveRequest = useCallback((requestId: string, response: { decision: T3Decision } | { answers: T3Answers } | { dismiss: true }) => {
+    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, ...response });
     setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
-  }, []);
-  const answerRequest = useCallback((requestId: string, answers: T3Answers) => {
-    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, answers });
-    setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
-  }, []);
-  const dismissRequest = useCallback((requestId: string) => {
-    if (sessionIdRef.current) sendRaw({ op: "respond-request", sessionId: sessionIdRef.current, requestId, dismiss: true });
-    setSession((s) => (s && s.request?.id === requestId ? { ...s, request: null } : s));
-  }, []);
+  }, [sendRaw]);
+  const respondRequest = useCallback((requestId: string, decision: T3Decision) => resolveRequest(requestId, { decision }), [resolveRequest]);
+  const answerRequest = useCallback((requestId: string, answers: T3Answers) => resolveRequest(requestId, { answers }), [resolveRequest]);
+  const dismissRequest = useCallback((requestId: string) => resolveRequest(requestId, { dismiss: true }), [resolveRequest]);
   const requestT3Models = useCallback(() => {
     sendRaw({ op: "t3-models" });
   }, []);

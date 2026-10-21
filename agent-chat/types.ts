@@ -19,7 +19,7 @@ export type AgentEvent =
     }
   | { kind: "options"; options: SessionOption[]; actions?: SessionActions }
   | { kind: "commands"; trigger: CommandTrigger; commands: CommandEntry[] }
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: ChatImage[] }
   /** A cmux agent message the agent received (`cmux agent message`). */
   | { kind: "agent-message"; id: string; from: string; body: string }
   | { kind: "status"; text: string }
@@ -31,8 +31,30 @@ export type AgentEvent =
   | { kind: "tool-end"; toolId: string; name?: string; detail?: string; ok?: boolean }
   | { kind: "done"; stats?: string }
   | { kind: "files-changed"; files: ChangedFile[] }
+  /** A page the agent published for the reader (T3's `html_render`), shown above its reply. */
+  | { kind: "html-render"; artifact: HtmlArtifact }
   // `prompt`: the prompt a failed send carried, which never reached the agent.
   | { kind: "error"; message: string; prompt?: string };
+
+/** An image in the chat. `url` is a path on the sidecar, below its token prefix. */
+export interface ChatImage {
+  url: string;
+  name: string;
+}
+
+/** A page an agent published with T3's `html_render`. Field names follow T3's `HtmlRenderReference`. */
+export interface HtmlArtifact {
+  id: string;
+  /** The page, as a path on the sidecar below its token prefix. */
+  url: string;
+  title: string;
+  /** The height the agent asked for, the cap when the page measured taller. */
+  height: number;
+  /** [width, height] pairs T3 measured the page at, narrowest first. */
+  heights?: [number, number][];
+  /** T3's coarse layout of the page at 728px, drawn as the loading skeleton. */
+  outline?: string;
+}
 
 export type SessionStatus = "idle" | "running" | "exited" | "error";
 export type OptionKind = "select" | "toggle";
@@ -112,6 +134,10 @@ export interface SessionCtx {
   emit(evt: AgentEvent): void;
   /** Replace replayed transcript history when its source file resets. */
   resetHistory?(): void;
+  /** Replace the whole history with these events, in one message to open views. */
+  replaceHistory?(events: AgentEvent[]): void;
+  /** Emit several events as one message to open views. */
+  emitAll?(events: AgentEvent[]): void;
   setStatus(status: SessionStatus): void;
 }
 

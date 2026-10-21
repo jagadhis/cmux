@@ -9,7 +9,7 @@ for (const required of [
   "#messages button",
   "#chat-input-row { position: relative",
   ".terminal-attention {\n  position: absolute",
-  ".msg .body .markdown-code pre",
+  ".markdown .markdown-code pre",
   "scroll-padding-inline: 14px",
   "user-select: text",
 ]) {

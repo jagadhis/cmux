@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Tooltip } from "@base-ui-components/react/tooltip";
 import { routedToT3NewChat, useSession, type SessionState } from "./session";
-import { RepositorySlugContext, SessionContext } from "./context";
+import { RepositorySlugContext, SessionContext, SessionCwdContext } from "./context";
 import { Composer } from "./components/Composer";
 import { Chat } from "./components/Chat";
 import { T3NewChat } from "./components/T3NewChat";
+import { MediaViewer } from "./components/Media";
 import { useOverlayScrollbars } from "./hooks/useOverlayScrollbars";
 import { useTypeToFocus } from "./hooks/useTypeToFocus";
 
@@ -20,9 +21,12 @@ export function App() {
     <Tooltip.Provider delay={500} closeDelay={80} timeout={800}>
       <SessionContext.Provider value={s}>
         <RepositorySlugContext.Provider value={repositorySlug}>
-          <main id="main">
-            {s.phase === "chat" ? <Chat /> : routedToT3NewChat ? <T3NewChat /> : !s.ready ? null : <Composer />}
-          </main>
+          <SessionCwdContext.Provider value={s.session?.cwd || null}>
+            <main id="main">
+              {s.phase === "chat" ? <Chat /> : routedToT3NewChat ? <T3NewChat /> : !s.ready ? null : <Composer />}
+            </main>
+            <MediaViewer />
+          </SessionCwdContext.Provider>
         </RepositorySlugContext.Provider>
       </SessionContext.Provider>
     </Tooltip.Provider>

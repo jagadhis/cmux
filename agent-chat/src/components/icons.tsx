@@ -1,4 +1,6 @@
+import { useSyncExternalStore } from "react";
 import type { Provider } from "../session";
+import { currentThemeRevision, subscribeThemeChanges } from "../theme";
 
 const PROVIDER_COLOR: Record<string, string> = {
   claude: "#d97757",
@@ -12,7 +14,8 @@ export function colorFor(id: string): string {
   if (PROVIDER_COLOR[id]) return PROVIDER_COLOR[id];
   let h = 0;
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `hsl(${h} 60% 60%)`;
+  // Mid lightness reads on both light and dark backgrounds.
+  return `hsl(${h} 60% 48%)`;
 }
 
 export function basename(p: string): string {
@@ -25,6 +28,8 @@ function Dot({ id }: { id: string }) {
 }
 
 function themeIsDark(): boolean {
+  const scheme = getComputedStyle(document.documentElement).getPropertyValue("--color-scheme").trim();
+  if (scheme === "light" || scheme === "dark") return scheme === "dark";
   const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
   const m = bg.match(/^#([0-9a-f]{6})$/i);
   if (!m) return true;
@@ -77,6 +82,8 @@ function DrawnProviderIcon({ id }: { id: string }) {
 }
 
 export function ProviderIcon({ provider }: { provider: Provider }) {
+  // Re-render on live theme changes so the light/dark icon variant follows.
+  useSyncExternalStore(subscribeThemeChanges, currentThemeRevision, () => 0);
   const src = themeIsDark() ? (provider.iconDarkUrl ?? provider.iconUrl) : provider.iconUrl;
   if (!src) return <DrawnProviderIcon id={provider.id} />;
   return <span className="provider-icon-img" aria-hidden="true" style={{ backgroundImage: `url(${src})` }} />;
@@ -139,6 +146,13 @@ export const CopyIcon = () => (
   <svg viewBox="0 0 16 16" width="14" height="14"><path d="M5.2 5.2h7.1v7.1H5.2zM3.7 10.8H3V3.7h7.1v.7" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" /></svg>
 );
 
+export const ExpandIcon = () => (
+  <svg viewBox="0 0 16 16" width="14" height="14"><path d="M9.5 2.8h3.7v3.7M13.2 2.8L9 7M6.5 13.2H2.8V9.5M2.8 13.2L7 9" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+);
+export const CloseIcon = () => (
+  <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+);
+
 export function PinwheelSpinner({ size = 14 }: { size?: number }) {
   return (
     <svg className="pinwheel-spinner" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
@@ -159,3 +173,19 @@ export function PinwheelSpinner({ size = 14 }: { size?: number }) {
     </svg>
   );
 }
+
+export const FileIcon = () => (
+  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4 1.8h5.2L12.5 5v9.2H4zM9 1.8V5.3h3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></svg>
+);
+
+const ALERT_ICON_PATHS: Record<string, string> = {
+  note: "M8 14.2A6.2 6.2 0 1 0 8 1.8a6.2 6.2 0 0 0 0 12.4zM8 7.3v4M8 4.9v.1",
+  tip: "M6 12.2h4M6.6 14.2h2.8M5.4 9.9C4.5 9.1 3.9 8 3.9 6.7a4.1 4.1 0 1 1 8.2 0c0 1.3-.6 2.4-1.5 3.2-.4.4-.6.8-.6 1.3v1H6v-1c0-.5-.2-.9-.6-1.3z",
+  important: "M2.3 2.3h11.4v8.6H8.6L5.4 13.7v-2.8H2.3zM8 4.8v3M8 9.4v.1",
+  warning: "M8 2.2l6.3 11H1.7zM8 6.6v3.2M8 11.6v.1",
+  caution: "M5.4 1.8h5.2l3.6 3.6v5.2l-3.6 3.6H5.4l-3.6-3.6V5.4zM8 4.9v3.8M8 10.9v.1",
+};
+
+export const AlertIcon = ({ kind }: { kind: string }) => (
+  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d={ALERT_ICON_PATHS[kind] ?? ALERT_ICON_PATHS.note} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+);

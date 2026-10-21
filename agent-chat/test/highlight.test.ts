@@ -19,8 +19,10 @@ const css = await Bun.file(new URL("../public/app.css", import.meta.url)).text()
 for (const needle of [
   "--ansi-bright-blue",
   "--ansi-green",
-  "--shiki-token-keyword: var(--ansi-bright-blue)",
-  "--shiki-token-string: var(--ansi-green)",
+  // Keywords use the bright blue slot on dark themes, the normal one on light (schemeVars).
+  "--code-blue: var(--ansi-bright-blue)",
+  "--shiki-token-keyword: var(--code-blue)",
+  "--shiki-token-string: color-mix(in srgb, var(--ansi-green) var(--status-mix), var(--fg))",
   "--shiki-token-function: var(--ansi-blue)",
   "--font-size-code",
 ]) {

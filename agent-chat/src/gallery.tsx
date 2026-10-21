@@ -17,6 +17,7 @@ import {
   galleryOptions,
   galleryProviders,
   longConversationBlocks,
+  markdownShowcaseBlocks,
   stressConversationBlocks,
   turnSummaryBlocks,
 } from "./gallery-fixtures";
@@ -141,7 +142,7 @@ function T3ComposerMock() {
             />
           </div>
           <div className="transcript-composer-row">
-            <T3ModelControls selection={selection} catalog={t3Catalog} running={false} onLoad={() => {}} onChange={setSelection} />
+            <T3ModelControls selection={selection} catalog={t3Catalog} onLoad={() => {}} onChange={setSelection} />
             <span className="transcript-hint"><span className="transcript-dot" aria-hidden="true" /><span>Synced with T3</span></span>
             <div className="chat-actions"><button className="send" type="button" aria-label="Send"><span aria-hidden>↑</span></button></div>
           </div>
@@ -448,6 +449,12 @@ export function GalleryApp() {
                 {queuedAgentMessages.map((message) => <AgentMessageRow key={message.id} message={message} />)}
               </div>
             </div>
+          </div>
+        </Section>
+
+        <Section id="markdown" title="Markdown reply">
+          <div className="gallery-transcript">
+            <Blocks blocks={markdownShowcaseBlocks} status="idle" actions={galleryActions} onFork={() => {}} forkPending={false} />
           </div>
         </Section>
 

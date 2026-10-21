@@ -1,5 +1,5 @@
 import { preferenceStorage, draftStorage } from "../browser-storage";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useCtx } from "../context";
 import { agentChatText } from "../i18n";
 import { readStoredProviderOptions, persistOptionsSnapshot, updateStoredProviderOption } from "../options-store";
@@ -18,6 +18,9 @@ import { loadingProviderOptionIds, providerOptionMap, useFileCatalog, useProvide
 const T3_TEXT = {
   running: "Working · Esc to stop",
   idle: "Synced with T3",
+  connecting: "Connecting to T3…",
+  disconnected: "Not connected to T3",
+  loading: "Loading the thread from T3…",
   ownAnswer: "Or type your own answer…",
   pickAbove: "Pick an option above",
   allow: "Allow",
@@ -66,6 +69,20 @@ function useStickToBottom(scrollRef: RefObject<HTMLDivElement | null>, stickRef:
     const el = scrollRef.current;
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [blocks, running, scrollRef, stickRef]);
+  // A banner appearing under the transcript or the composer growing shrinks it
+  // from below, and images or pages can grow it after rendering: stay at the
+  // bottom when it was there.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    const content = el.querySelector(".turn-list");
+    if (content) observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollRef, stickRef]);
 }
 
 export function Chat() {
@@ -93,6 +110,10 @@ export function Chat() {
   const resolvedOptions = useMemo(() => optionsForSelectedModel(options), [options]);
   const isT3 = session?.source === "t3";
   const question = useT3Questions(isT3 ? session?.request : null, answerRequest);
+  const sessionId = session?.id;
+  const onFileDiff = useCallback((path: string) => {
+    if (sessionId) requestFileDiff(sessionId, path);
+  }, [requestFileDiff, sessionId]);
 
   useRestoreModelScopedOptions({ provider: session?.provider, options: resolvedOptions, setOption, pendingModelRestoreRef });
   usePersistSessionOptions(session?.provider, resolvedOptions, pendingModelRestoreRef.current !== null);
@@ -173,6 +194,8 @@ export function Chat() {
           <div className="connection-notice" role="status">
             {connectionEpoch > 0 ? "Connection lost. Reconnecting… Your draft stays here." : "Connecting to cmux…"}
           </div>
+        ) : isT3 && !session?.t3Synced && !session?.t3Connection && !blocks.length ? (
+          <div className="connection-notice" role="status">{T3_TEXT.loading}</div>
         ) : null}
         <Blocks
           blocks={blocks}
@@ -184,7 +207,7 @@ export function Chat() {
           handoffPending={handoffPending}
           fileDiffs={fileDiffs}
           fileDiffErrors={fileDiffErrors}
-          onFileDiff={(path) => { if (session) requestFileDiff(session.id, path); }}
+          onFileDiff={onFileDiff}
         />
       </div>
       <div id="chat-input-row">
@@ -192,6 +215,9 @@ export function Chat() {
           <div className="routing-notice" role="status">{agentChatText("continuedNewChat")}</div>
         ) : routing?.phase === "rerouted" ? (
           <div className="routing-notice" role="status">{agentChatText("movedServingRoute")}</div>
+        ) : null}
+        {isT3 && session?.t3Connection ? (
+          <div className="routing-notice" role="status">{session.t3Connection}</div>
         ) : null}
         {transcriptView && session?.queuedMessages?.length ? (
           <div className="agent-messages-queued" role="status">
@@ -268,7 +294,6 @@ export function Chat() {
                 <T3ModelControls
                   selection={session?.t3Model}
                   catalog={t3Models}
-                  running={running}
                   onLoad={requestT3Models}
                   onChange={setT3Model}
                 />
@@ -276,7 +301,7 @@ export function Chat() {
               <span className="transcript-hint">
                 <span className={running ? "transcript-dot running" : "transcript-dot"} aria-hidden="true" />
                 <span>{isT3
-                  ? (running ? T3_TEXT.running : T3_TEXT.idle)
+                  ? (session?.t3Connection ? T3_TEXT.disconnected : !session?.t3Synced ? T3_TEXT.connecting : running ? T3_TEXT.running : T3_TEXT.idle)
                   : agentChatText(running ? "transcriptViewRunning" : "transcriptViewIdle")}</span>
               </span>
               {chatActions}

@@ -9,16 +9,26 @@
 //
 // Sends, stops, approvals, answers and model changes are T3 commands, so they
 // show up in T3 too, and changes made in T3 show up here.
+//
+// The thread arrives over `orchestration.subscribeThread`: a snapshot, then
+// events that `T3ThreadMirror` applies with T3's own reducer. Every 120 ms at
+// most, `T3Timeline` turns the projection into chat events.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Adapter, SessionCtx } from "../types";
-import { T3Timeline, type T3BackgroundStop, type T3BackgroundWork, type T3ModelSelection, type T3PendingRequest, type T3Projection } from "./t3-timeline";
+import type { Adapter, AgentEvent, SessionCtx } from "../types";
+import type { T3Answers, T3Decision, T3LaunchDefaults, T3ModelOption, T3ModelProvider, T3Project } from "../t3-contract";
+import { T3ThreadMirror, type T3ProjectionReducer, type T3StreamItem } from "./t3-stream";
+import { T3Timeline, type T3BackgroundStop, type T3BackgroundWork, type T3ModelSelection, type T3PendingRequest, type T3Projection, type T3Step } from "./t3-timeline";
 
 const T3CODE_DIR = process.env.CMUX_T3CODE_DIR || join(homedir(), "projects", "t3code");
 const RUNTIME_FILE = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "server-runtime.json");
 const KEYCHAIN_SERVICE = process.env.CMUX_T3_TOKEN_SERVICE || "cmux-agent-home-t3-token";
 const REFRESH_DEBOUNCE_MS = 120;
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+/** More fresh snapshots than this in a minute means the reducer can't follow the thread: re-read it instead. */
+const MAX_RESYNCS_PER_MINUTE = 3;
 
 /** Callbacks the server gives each T3 session. */
 export interface T3SessionHooks {
@@ -27,22 +37,34 @@ export interface T3SessionHooks {
   onRequest(request: T3PendingRequest | null): void;
   onModel(selection: T3ModelSelection | null): void;
   onBackground(work: T3BackgroundWork | null): void;
+  /** Null once the thread is read and current; otherwise why it can't be (T3 isn't running, the token was refused). */
+  onConnection(problem: string | null): void;
+  /** A command the user sent failed. */
   onError(message: string): void;
 }
 
 interface T3State {
   threadId: string;
   timeline: T3Timeline;
+  mirror?: T3ThreadMirror;
   activeRunId?: string;
   request: T3PendingRequest | null;
   modelSelection: T3ModelSelection | null;
   background: T3BackgroundWork | null;
   backgroundStop?: T3BackgroundStop;
   hooks: T3SessionHooks;
-  subscription?: { interrupt(): void };
-  refreshTimer?: ReturnType<typeof setTimeout>;
-  refreshing?: boolean;
-  refreshAgain?: boolean;
+  subscription?: { interrupt(): void; resync?: boolean };
+  stepTimer?: ReturnType<typeof setTimeout>;
+  stepping?: boolean;
+  stepAgain?: boolean;
+  /** Re-read the thread over RPC on the next step (no reducer). */
+  readNext?: boolean;
+  /** Set after the first step: later ones emit only what changed. */
+  synced?: boolean;
+  /** When recent fresh snapshots were asked for. */
+  resyncs: number[];
+  /** The wait before the next try after a failure; doubles up to 30 s. */
+  retryDelay?: number;
   disposed?: boolean;
 }
 
@@ -76,14 +98,31 @@ function effectModules(): Promise<EffectModules> {
   return modulesPromise;
 }
 
-function readToken(): string {
+let reducerPromise: Promise<T3ProjectionReducer | null> | undefined;
+/** T3's projection reducer, from the same checkout as the protocol; null when that checkout has none. */
+function projectionReducer(): Promise<T3ProjectionReducer | null> {
+  reducerPromise ??= import(join(T3CODE_DIR, "packages", "client-runtime", "src", "state", "orchestrationV2Projection.ts"))
+    .then((m) => typeof m.applyOrchestrationV2ProjectionEvent === "function" ? m.applyOrchestrationV2ProjectionEvent as T3ProjectionReducer : null)
+    .catch((err) => {
+      console.error("[agent-chat] T3's projection reducer didn't load; threads are re-read on every change", err);
+      return null;
+    });
+  return reducerPromise;
+}
+
+let cachedToken: string | undefined;
+/** The Keychain token. Reading it spawns `security`, so it's read once and again only when T3 refuses it. */
+function readToken(options: { fresh?: boolean } = {}): string {
+  if (cachedToken && !options.fresh) return cachedToken;
   const result = Bun.spawnSync(["security", "find-generic-password", "-a", process.env.USER ?? "", "-s", KEYCHAIN_SERVICE, "-w"]);
   const token = result.stdout.toString().trim();
   if (!token) {
+    cachedToken = undefined;
     throw new Error(
       `No T3 token in the Keychain (${KEYCHAIN_SERVICE}). Issue one with: t3 auth session issue --scope orchestration:read --scope orchestration:operate --label "cmux Agent Home" --token-only`,
     );
   }
+  cachedToken = token;
   return token;
 }
 
@@ -109,11 +148,20 @@ function connection(): Promise<Connection> {
   const pending = (async (): Promise<Connection> => {
     const m = await effectModules();
     const runtime = JSON.parse(await Bun.file(RUNTIME_FILE).text()) as { origin: string };
-    const token = readToken();
-    const ticketResponse = await fetch(new URL("/api/auth/websocket-ticket", runtime.origin), {
+    const requestTicket = (token: string) => fetch(new URL("/api/auth/websocket-ticket", runtime.origin), {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
     });
+    let token = readToken();
+    let ticketResponse = await requestTicket(token);
+    if (ticketResponse.status === 401 || ticketResponse.status === 403) {
+      // The user may have issued a new token since it was read.
+      const fresh = readToken({ fresh: true });
+      if (fresh !== token) {
+        token = fresh;
+        ticketResponse = await requestTicket(token);
+      }
+    }
     if (!ticketResponse.ok) throw new Error(`T3 refused the cmux token (HTTP ${ticketResponse.status}).`);
     const { ticket } = (await ticketResponse.json()) as { ticket: string };
     const wsUrl = new URL("/ws", runtime.origin);
@@ -144,6 +192,8 @@ function connection(): Promise<Connection> {
       rejectClient(new Error(`T3 connection closed: ${String(exit).slice(0, 200)}`));
     });
     conn.client = await ready;
+    // T3 is back: chats waiting out a long backoff resubscribe now.
+    wakeWaitingSessions();
     return conn;
   })();
   connectionPromise = pending;
@@ -192,98 +242,228 @@ function state(sess: SessionCtx): T3State | undefined {
 
 /** Starts mirroring a T3 thread into a chat session. */
 export function attachT3Thread(sess: SessionCtx, threadId: string, hooks: T3SessionHooks) {
-  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, modelSelection: null, background: null, hooks };
+  const s: T3State = { threadId, timeline: new T3Timeline(), request: null, modelSelection: null, background: null, hooks, resyncs: [] };
   sess.internal.t3 = s;
   void subscribe(sess, s);
 }
 
+/** Follows the thread's stream. After a dropped stream it resumes after the last
+ * sequence seen, so T3 replays only what was missed. */
 async function subscribe(sess: SessionCtx, s: T3State) {
   try {
-    const [m, conn] = await Promise.all([effectModules(), connection()]);
+    const [m, conn, reducer] = await Promise.all([effectModules(), connection(), projectionReducer()]);
     if (s.disposed) return;
-    await refresh(sess, s);
+    s.mirror ??= new T3ThreadMirror(reducer);
+    const sequence = s.mirror.sequence;
+    // A long thread comes as its recent window, as `getThreadProjection` reads it.
+    // `synchronized` follows the snapshot or the replay of what was missed.
+    const input = {
+      threadId: s.threadId,
+      acceptBoundedSnapshot: true,
+      requestCompletionMarker: true,
+      ...(sequence !== undefined ? { afterSequence: sequence } : {}),
+    };
     const fiber = m.Effect.runFork(m.Stream.runForEach(
-      conn.client["orchestration.subscribeThread"]({ threadId: s.threadId }),
-      () => m.Effect.sync(() => scheduleRefresh(sess, s)),
+      conn.client["orchestration.subscribeThread"](input),
+      (item: T3StreamItem) => m.Effect.sync(() => onStreamItem(sess, s, item)),
     ));
-    s.subscription = { interrupt: () => m.Effect.runFork(m.Fiber.interrupt(fiber)) };
-    fiber.addObserver?.(() => {
-      if (s.disposed) return;
+    const subscription: NonNullable<T3State["subscription"]> = { interrupt: () => m.Effect.runFork(m.Fiber.interrupt(fiber)) };
+    s.subscription = subscription;
+    fiber.addObserver?.((exit: unknown) => {
+      if (s.disposed || s.subscription !== subscription) return;
+      s.subscription = undefined;
+      if (subscription.resync) {
+        void subscribe(sess, s);
+        return;
+      }
+      // One thread's stream failing (a deleted or broken thread) leaves the shared socket
+      // alone: dropping it would end every other chat's stream too.
+      const failure = (exit as { _tag?: string; cause?: unknown } | undefined)?._tag === "Failure" ? (exit as { cause?: unknown }).cause : undefined;
+      if (failure !== undefined && !isConnectionFailure(new Error(Bun.inspect(failure)))) {
+        lostConnection(sess, s, "T3 couldn't stream this thread. Retrying…");
+        return;
+      }
       // The stream ended (T3 restarted or the socket dropped): sign in again and resubscribe.
       dropConnection(conn);
-      setTimeout(() => { if (!s.disposed) void subscribe(sess, s); }, 1_000);
+      lostConnection(sess, s, "Lost the connection to T3. Reconnecting…");
     });
   } catch (err) {
     if (s.disposed) return;
-    s.hooks.onError(err instanceof Error ? err.message : String(err));
-    setTimeout(() => { if (!s.disposed) void subscribe(sess, s); }, 5_000);
+    lostConnection(sess, s, err instanceof Error ? err.message : String(err));
   }
 }
 
-function scheduleRefresh(sess: SessionCtx, s: T3State) {
-  if (s.refreshTimer) return;
-  s.refreshTimer = setTimeout(() => {
-    s.refreshTimer = undefined;
-    void refresh(sess, s);
-  }, REFRESH_DEBOUNCE_MS);
+function onStreamItem(sess: SessionCtx, s: T3State, item: T3StreamItem) {
+  // Items the old stream still delivers while a fresh snapshot is on its way don't count.
+  if (s.disposed || !s.mirror || s.subscription?.resync) return;
+  s.retryDelay = undefined;
+  if (item.kind === "synchronized") {
+    // Caught up, perhaps with nothing missed: publish so status and connection state are current.
+    if (s.mirror.projection) scheduleStep(sess, s, 0);
+    return;
+  }
+  const result = s.mirror.apply(item);
+  if (result === "unchanged") return;
+  if (result === "resync") {
+    resync(sess, s);
+    return;
+  }
+  if (result === "read") s.readNext = true;
+  // The first snapshot shows right away; later changes batch up.
+  scheduleStep(sess, s, s.synced ? REFRESH_DEBOUNCE_MS : 0);
 }
 
-/** Reads the thread and emits what changed. Runs one at a time; a change during a read reads again. */
-async function refresh(sess: SessionCtx, s: T3State) {
-  if (s.refreshing) { s.refreshAgain = true; return; }
-  s.refreshing = true;
+/** Starts over from a fresh snapshot. A thread that keeps needing one is re-read on every change instead. */
+function resync(sess: SessionCtx, s: T3State) {
+  const now = Date.now();
+  s.resyncs = s.resyncs.filter((at) => now - at < 60_000);
+  s.resyncs.push(now);
+  if (s.resyncs.length > MAX_RESYNCS_PER_MINUTE && s.mirror) {
+    s.mirror.reducer = null;
+    s.readNext = true;
+    scheduleStep(sess, s, REFRESH_DEBOUNCE_MS);
+    return;
+  }
+  s.mirror?.forget();
+  const subscription = s.subscription;
+  if (!subscription) return;
+  subscription.resync = true;
+  subscription.interrupt();
+}
+
+function lostConnection(sess: SessionCtx, s: T3State, problem: string) {
+  s.hooks.onConnection(problem);
+  // Nothing is known while disconnected; don't keep showing a run as working.
+  sess.setStatus("idle");
+  retryLater(s, () => { void subscribe(sess, s); });
+}
+
+function scheduleStep(sess: SessionCtx, s: T3State, delay: number) {
+  if (s.stepTimer) return;
+  s.stepTimer = setTimeout(() => {
+    s.stepTimer = undefined;
+    void step(sess, s);
+  }, delay);
+}
+
+/** Emits what changed in the projection. Runs one at a time; a change during a read steps again. */
+async function step(sess: SessionCtx, s: T3State) {
+  if (s.stepping) { s.stepAgain = true; return; }
+  s.stepping = true;
+  let reading = false;
   try {
-    const projection = await run<T3Projection>((client) =>
-      client["orchestration.getThreadProjection"]({ threadId: s.threadId }));
-    if (s.disposed) return;
-    const step = s.timeline.step(projection);
-    if (step.reset) sess.resetHistory?.();
-    for (const evt of step.events) sess.emit(evt);
-    s.activeRunId = step.activeRunId;
-    s.backgroundStop = step.backgroundStop;
-    sess.setStatus(step.status);
-    s.hooks.onTitle(step.title);
-    if (step.cwd) s.hooks.onCwd(step.cwd);
-    const modelSelection = step.modelSelection ?? null;
-    if (JSON.stringify(modelSelection) !== JSON.stringify(s.modelSelection)) {
-      s.modelSelection = modelSelection;
-      s.hooks.onModel(modelSelection);
+    if (s.readNext && s.mirror) {
+      s.readNext = false;
+      reading = true;
+      const projection = await run<T3Projection>((client) =>
+        client["orchestration.getThreadProjection"]({ threadId: s.threadId }));
+      if (s.disposed) return;
+      s.mirror.replace(projection);
     }
-    if (JSON.stringify(step.request) !== JSON.stringify(s.request)) {
-      s.request = step.request;
-      s.hooks.onRequest(step.request);
-    }
-    if (JSON.stringify(step.background) !== JSON.stringify(s.background)) {
-      s.background = step.background;
-      s.hooks.onBackground(step.background);
-    }
+    const projection = s.mirror?.projection;
+    if (!projection || s.disposed) return;
+    publish(sess, s, s.timeline.step(projection));
   } catch (err) {
-    if (!s.disposed) s.hooks.onError(err instanceof Error ? err.message : String(err));
+    // A failed read: the stream reports a dropped connection itself. The read is
+    // tried again, since an idle thread may send nothing that would prompt one.
+    if (!s.disposed) {
+      s.hooks.onConnection(err instanceof Error ? err.message : String(err));
+      if (reading) {
+        s.readNext = true;
+        retryLater(s, () => scheduleStep(sess, s, 0));
+      }
+    }
   } finally {
-    s.refreshing = false;
-    if (s.refreshAgain && !s.disposed) { s.refreshAgain = false; scheduleRefresh(sess, s); }
+    s.stepping = false;
+    if (s.stepAgain && !s.disposed) { s.stepAgain = false; scheduleStep(sess, s, REFRESH_DEBOUNCE_MS); }
   }
+}
+
+function publish(sess: SessionCtx, s: T3State, step: T3Step) {
+  emitStep(sess, step.events, step.reset || !s.synced);
+  s.synced = true;
+  s.hooks.onConnection(null);
+  s.activeRunId = step.activeRunId;
+  s.backgroundStop = step.backgroundStop;
+  sess.setStatus(step.status);
+  s.hooks.onTitle(step.title);
+  if (step.cwd) s.hooks.onCwd(step.cwd);
+  const modelSelection = step.modelSelection ?? null;
+  if (JSON.stringify(modelSelection) !== JSON.stringify(s.modelSelection)) {
+    s.modelSelection = modelSelection;
+    s.hooks.onModel(modelSelection);
+  }
+  if (JSON.stringify(step.request) !== JSON.stringify(s.request)) {
+    s.request = step.request;
+    s.hooks.onRequest(step.request);
+  }
+  if (JSON.stringify(step.background) !== JSON.stringify(s.background)) {
+    s.background = step.background;
+    s.hooks.onBackground(step.background);
+  }
+}
+
+/** Sends one step's events: the whole history at once on the first read or a
+ * rollback (no empty flash), otherwise as one batch. */
+export function emitStep(sess: SessionCtx, events: AgentEvent[], replace: boolean) {
+  if (replace && sess.replaceHistory) sess.replaceHistory(events);
+  else if (sess.emitAll) sess.emitAll(events);
+  else {
+    if (replace) sess.resetHistory?.();
+    for (const evt of events) sess.emit(evt);
+  }
+}
+
+// MARK: - Retries
+
+/** Chats waiting to resubscribe, and when. One timer serves them all, so
+ * chats that lost T3 together retry together and share one sign-in. */
+const waiting = new Map<T3State, { due: number; resume: () => void }>();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The wait after a chat's next failure: 1 s, doubling to 30 s, back to 1 s once the stream delivers. */
+export function nextRetryDelay(previous: number | undefined): number {
+  return previous === undefined ? RETRY_MIN_MS : Math.min(RETRY_MAX_MS, previous * 2);
+}
+
+function retryLater(s: T3State, resume: () => void) {
+  if (s.disposed) return;
+  s.retryDelay = nextRetryDelay(s.retryDelay);
+  waiting.set(s, { due: Date.now() + s.retryDelay, resume });
+  armRetryTimer();
+}
+
+function armRetryTimer() {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = undefined;
+  if (!waiting.size) return;
+  let due = Infinity;
+  for (const entry of waiting.values()) due = Math.min(due, entry.due);
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined;
+    // Chats due within a moment go in this round too.
+    const now = Date.now() + 250;
+    for (const [s, entry] of waiting) {
+      if (entry.due > now) continue;
+      waiting.delete(s);
+      if (!s.disposed) entry.resume();
+    }
+    armRetryTimer();
+  }, Math.max(0, due - Date.now()));
+}
+
+function wakeWaitingSessions() {
+  if (!waiting.size) return;
+  const now = Date.now();
+  for (const entry of waiting.values()) entry.due = now;
+  armRetryTimer();
 }
 
 // MARK: - New threads
 
 const STATE_DB = join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata", "statev2.sqlite");
 
-/** What a new thread in a project starts with: the project's default model,
- * else the model of the project's most recent thread, and that thread's modes. */
-export interface T3LaunchDefaults {
-  modelSelection: T3ModelSelection | null;
-  runtimeMode: string;
-  interactionMode: string;
-}
-
-/** A T3 project a new chat can start in. */
-export interface T3Project {
-  id: string;
-  name: string;
-  root: string;
-  defaults: T3LaunchDefaults;
-}
+export type { T3LaunchDefaults, T3ModelOption, T3ModelProvider, T3Project } from "../t3-contract";
 
 export const T3_RUNTIME_MODES = ["approval-required", "auto-accept-edits", "auto", "full-access"] as const;
 export const T3_INTERACTION_MODES = ["default", "plan"] as const;
@@ -303,39 +483,54 @@ function parseJson(text: string | null | undefined): any {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-function readLaunchDefaults(db: import("bun:sqlite").Database, projectId: string, projectModelJson: string | null): T3LaunchDefaults {
-  const latest = db.query(
-    "SELECT payload_json FROM orchestration_v2_projection_threads WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
-  ).get(projectId) as { payload_json: string } | null;
-  const payload = parseJson(latest?.payload_json) ?? {};
+/** Projects with their default model and their latest thread's settings, in one
+ * statement: the latest thread is an index seek on (project_id, updated_at), and
+ * only its payload is parsed, for the three fields read. */
+const PROJECT_DEFAULTS_SQL = `
+  SELECT p.project_id, p.title, p.workspace_root, p.default_model_selection_json,
+    json_extract(t.payload_json, '$.modelSelection') AS thread_model_json,
+    json_extract(t.payload_json, '$.runtimeMode') AS runtime_mode,
+    json_extract(t.payload_json, '$.interactionMode') AS interaction_mode
+  FROM projection_projects p
+  LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id = (
+    SELECT thread_id FROM orchestration_v2_projection_threads
+    WHERE project_id = p.project_id AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1)`;
+
+interface ProjectDefaultsRow {
+  project_id: string;
+  title: string | null;
+  workspace_root: string | null;
+  default_model_selection_json: string | null;
+  thread_model_json: string | null;
+  runtime_mode: string | null;
+  interaction_mode: string | null;
+}
+
+function launchDefaultsOf(row: ProjectDefaultsRow): T3LaunchDefaults {
   return {
-    modelSelection: parseJson(projectModelJson) ?? payload.modelSelection ?? null,
-    runtimeMode: payload.runtimeMode ?? "full-access",
-    interactionMode: payload.interactionMode ?? "default",
+    modelSelection: parseJson(row.default_model_selection_json) ?? parseJson(row.thread_model_json) ?? null,
+    runtimeMode: row.runtime_mode ?? "full-access",
+    interactionMode: row.interaction_mode ?? "default",
   };
 }
 
 /** Every T3 project that isn't deleted, by name, with what a new thread there starts with. */
 export function t3Projects(): T3Project[] {
   return withStateDb((db) => {
-    const rows = db.query(
-      "SELECT project_id, title, workspace_root, default_model_selection_json FROM projection_projects WHERE deleted_at IS NULL ORDER BY title COLLATE NOCASE",
-    ).all() as { project_id: string; title: string | null; workspace_root: string | null; default_model_selection_json: string | null }[];
+    const rows = db.query(`${PROJECT_DEFAULTS_SQL} WHERE p.deleted_at IS NULL ORDER BY p.title COLLATE NOCASE`).all() as ProjectDefaultsRow[];
     return rows.map((row) => ({
       id: row.project_id,
       name: row.title ?? "",
       root: row.workspace_root ?? "",
-      defaults: readLaunchDefaults(db, row.project_id, row.default_model_selection_json),
+      defaults: launchDefaultsOf(row),
     }));
   });
 }
 
 function launchDefaults(projectId: string): T3LaunchDefaults {
   return withStateDb((db) => {
-    const project = db.query("SELECT default_model_selection_json FROM projection_projects WHERE project_id = ?").get(projectId) as
-      | { default_model_selection_json: string | null }
-      | null;
-    return readLaunchDefaults(db, projectId, project?.default_model_selection_json ?? null);
+    const row = db.query(`${PROJECT_DEFAULTS_SQL} WHERE p.project_id = ?`).get(projectId) as ProjectDefaultsRow | null;
+    return row ? launchDefaultsOf(row) : { modelSelection: null, runtimeMode: "full-access", interactionMode: "default" };
   });
 }
 
@@ -350,8 +545,11 @@ export async function launchT3Thread(input: {
 }): Promise<{ threadId: string }> {
   const text = input.text.trim();
   if (!text) throw new Error("Type what the agent should do.");
-  const defaults = launchDefaults(input.projectId);
-  const modelSelection = input.modelSelection ?? defaults.modelSelection;
+  // The defaults are read only for settings the composer left out.
+  const defaults = input.modelSelection && input.runtimeMode && input.interactionMode
+    ? null
+    : launchDefaults(input.projectId);
+  const modelSelection = input.modelSelection ?? defaults?.modelSelection;
   if (!modelSelection) throw new Error("Pick a model for this chat; the project has no default and no earlier threads.");
   const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? text;
   const result = await run<{ threadId: string }>((client) => client["orchestration.launchThread"]({
@@ -361,8 +559,8 @@ export async function launchT3Thread(input: {
     title: firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine,
     generateTitle: true,
     modelSelection,
-    runtimeMode: input.runtimeMode ?? defaults.runtimeMode,
-    interactionMode: input.interactionMode ?? defaults.interactionMode,
+    runtimeMode: input.runtimeMode ?? defaults?.runtimeMode ?? "full-access",
+    interactionMode: input.interactionMode ?? defaults?.interactionMode ?? "default",
     workspaceStrategy: { type: "root" },
     initialMessage: { text, attachments: [] },
   }));
@@ -370,12 +568,12 @@ export async function launchT3Thread(input: {
 }
 
 /** Answers the thread's pending approval in T3. */
-export async function respondT3Request(sess: SessionCtx, requestId: string, decision: "accept" | "acceptForSession" | "decline") {
+export async function respondT3Request(sess: SessionCtx, requestId: string, decision: T3Decision) {
   await dispatch({ type: "runtime-request.respond", threadId: threadIdOf(sess), requestId, decision });
 }
 
 /** Answers the thread's pending questions in T3: question id to an option value, values, or typed text. */
-export async function answerT3Question(sess: SessionCtx, requestId: string, answers: Record<string, string | string[]>) {
+export async function answerT3Question(sess: SessionCtx, requestId: string, answers: T3Answers) {
   await dispatch({ type: "runtime-request.respond", threadId: threadIdOf(sess), requestId, answers });
 }
 
@@ -413,21 +611,6 @@ function threadIdOf(sess: SessionCtx): string {
 }
 
 // MARK: - Models
-
-/** A model option T3 offers, e.g. reasoning effort or fast mode. */
-export interface T3ModelOption {
-  id: string;
-  label: string;
-  type: "select" | "boolean";
-  choices?: { id: string; label: string; description?: string; isDefault?: boolean }[];
-}
-
-export interface T3ModelProvider {
-  instanceId: string;
-  driver: string;
-  name: string;
-  models: { slug: string; name: string; isDefault?: boolean; options: T3ModelOption[] }[];
-}
 
 const CATALOG_TTL_MS = 60_000;
 let catalogCache: { at: number; providers: Promise<T3ModelProvider[]> } | undefined;
@@ -502,7 +685,8 @@ export const t3Adapter: Adapter = {
     const s = state(sess);
     if (!s) return;
     s.disposed = true;
-    if (s.refreshTimer) clearTimeout(s.refreshTimer);
+    if (s.stepTimer) clearTimeout(s.stepTimer);
+    waiting.delete(s);
     s.subscription?.interrupt();
   },
   async setOption() {
@@ -562,7 +746,7 @@ export async function t3Usage(input: {
   // user issues a new one with diagnostics:read, sign in again to use it.
   if (summary.error === "needsDiagnosticsScope") {
     const conn = await connection();
-    if (readToken() !== conn.token) {
+    if (readToken({ fresh: true }) !== conn.token) {
       dropConnection(conn);
       summary = await readSummary();
     }

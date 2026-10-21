@@ -169,6 +169,39 @@ function finish(bg: string, fg: string, kv: Map<string, string>, source: string,
   };
 }
 
+/**
+ * Variables that differ between light and dark themes, so the stylesheet can
+ * stay one set of rules: the page's `color-scheme`, text on a solid accent,
+ * popup shadows, how far status colors lean toward the text color, and which
+ * ANSI slots syntax highlighting uses (the bright slots are the readable ones
+ * on dark backgrounds, the normal slots on light ones).
+ */
+export function schemeVars(theme: Pick<GhosttyTheme, "isLight" | "foreground" | "palette" | "accent">): Record<string, string> {
+  const light = theme.isLight;
+  const accent = pickAccentColor(theme);
+  return {
+    "--color-scheme": light ? "light" : "dark",
+    // Black or white, whichever contrasts more with the accent (they tie at 0.179).
+    "--on-accent": relativeLuminance(accent) > 0.179 ? "#000000" : "#ffffff",
+    "--shadow": light ? "rgba(0, 0, 0, .14)" : "rgba(0, 0, 0, .4)",
+    // Light themes' yellow and green slots are often too pale to read as text.
+    "--status-mix": light ? "62%" : "100%",
+    "--code-cyan": light ? "var(--ansi-cyan)" : "var(--ansi-bright-cyan)",
+    "--code-blue": light ? "var(--ansi-blue)" : "var(--ansi-bright-blue)",
+    "--code-magenta": light ? "var(--ansi-magenta)" : "var(--ansi-bright-magenta)",
+  };
+}
+
+/** WCAG relative luminance of a #rrggbb color. */
+function relativeLuminance(hex: string): number {
+  const n = parseInt(hex.slice(1), 16);
+  const channel = (value: number) => {
+    const c = value / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+}
+
 export function pickAccentColor(theme: Pick<GhosttyTheme, "foreground" | "palette" | "accent">): string {
   if (theme.accent) return theme.accent;
   for (const slot of [4, 12, 6, 14, 5, 13, 2, 10]) {

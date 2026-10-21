@@ -52,6 +52,18 @@ Smoke test every provider end to end (spawns real agents):
 bun test/e2e.ts               # or: bun test/e2e.ts codex pi
 ```
 
+## Images and pages
+
+The chat shows images and HTML pages the way T3 Code does:
+
+- **Images sent with a prompt** in a T3 thread show as thumbnails on the user message. The sidecar serves them from T3's attachment folder (`~/.t3/userdata/attachments`, or `$T3CODE_HOME`) at `/api/t3/attachments/<id>`, cached for good because an attachment id never changes bytes.
+- **Markdown images in a reply** (`![plot](/tmp/plot.png)`, `file://` URLs, and paths relative to the session directory) load through `/api/local-image?path=`, which serves image types only and revalidates with an ETag. Web images load as written.
+- **Pages an agent publishes with T3's `html_render`** are framed above the reply at the height T3 measured for the column's width, with T3's outline skeleton until they load, so nothing below moves. A frame mounts only when it comes within 1200px of the viewport. The page gets the terminal theme as T3's theme variables and follows theme changes live.
+
+Clicking any image or a page's expand button opens it full size; Esc or a click outside closes it.
+
+A page is agent-written HTML, so it never runs with the sidecar's origin. The frame is sandboxed without `allow-same-origin`, and its document comes from a `blob:` URL rather than the sidecar URL, because a page can read its own address and the sidecar's contains the access token. Opened directly, the page response carries a CSP `sandbox` header for the same reason.
+
 ## Architecture
 
 The frontend is a small React app built with Bun and styled to match the

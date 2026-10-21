@@ -11,7 +11,10 @@
 // request T3 is waiting on (an approval, or questions with options), and the
 // work still going after the turn ended (T3's background-work banner).
 
-import type { AgentEvent, SessionStatus } from "../types";
+import type { T3BackgroundKind, T3BackgroundWork, T3ModelSelection, T3PendingRequest, T3Question } from "../t3-contract";
+import type { AgentEvent, ChatImage, HtmlArtifact, SessionStatus } from "../types";
+
+export type { T3BackgroundKind, T3BackgroundWork, T3ModelSelection, T3PendingRequest, T3Question, T3QuestionOption } from "../t3-contract";
 
 /** The subset of a T3 projection this module reads. Field names follow T3's contracts. */
 export interface T3Projection {
@@ -24,10 +27,18 @@ export interface T3Projection {
     pullRequests?: T3PullRequestLink[];
   };
   runs: T3Run[];
-  messages: { id: string; role: string; text: string }[];
+  messages: { id: string; role: string; text: string; attachments?: T3Attachment[] }[];
   turnItems: T3TurnItem[];
   runtimeRequests: T3RuntimeRequest[];
   providerThreads?: { id: string; pendingBackgroundTasks?: T3BackgroundTask[] }[];
+}
+
+/** A file sent with a message; images show in the chat. */
+export interface T3Attachment {
+  type: string;
+  id: string;
+  name?: string;
+  mimeType?: string;
 }
 
 /** A pull request linked to the thread; `watch` is set while T3 watches it. */
@@ -39,8 +50,6 @@ export interface T3PullRequestLink {
   watch?: unknown;
 }
 
-export type T3BackgroundKind = "subagent" | "command" | "monitor" | "background_task";
-
 /** Work a provider reports still running after its turn. */
 export interface T3BackgroundTask {
   taskId: string;
@@ -49,25 +58,10 @@ export interface T3BackgroundTask {
   childThreadId?: string;
 }
 
-/** What T3's background-work banner shows. */
-export interface T3BackgroundWork {
-  title: string;
-  items: { taskId: string; kind: T3BackgroundKind; label: string; childThreadId?: string }[];
-  /** Subagents and monitors hold the thread: it isn't done until they end. */
-  waiting: boolean;
-}
-
 /** How Stop ends background work: interrupt the run that owns it, or unwatch pull requests. */
 export interface T3BackgroundStop {
   runId?: string;
   pullRequests: { host: string; repository: string; number: number }[];
-}
-
-/** T3's model selection: a provider instance, a model, and its option values. */
-export interface T3ModelSelection {
-  instanceId?: string;
-  model?: string;
-  options?: { id: string; value: string | boolean }[];
 }
 
 export interface T3Run {
@@ -87,6 +81,8 @@ export interface T3TurnItem {
   title?: string | null;
   text?: string;
   input?: unknown;
+  /** A tool's result; an `html_render` call's carries the published page. */
+  output?: unknown;
   toolName?: string;
   summary?: string;
   /** `user_input_request` and `approval_request` items name their request. */
@@ -99,44 +95,12 @@ export interface T3TurnItem {
   childThreadId?: string | null;
 }
 
-export interface T3QuestionOption {
-  label: string;
-  description?: string;
-  value?: string;
-}
-
-export interface T3Question {
-  id: string;
-  header: string;
-  question: string;
-  options: T3QuestionOption[];
-  multiSelect?: boolean;
-  allowCustomAnswer?: boolean;
-  initialAnswer?: string;
-}
-
 export interface T3RuntimeRequest {
   id: string;
   kind: string;
   status: string;
   responseCapability?: { type: string };
   answers?: Record<string, unknown>;
-}
-
-/** A pending request the chat shows as an approval card. */
-export interface T3PendingRequest {
-  id: string;
-  kind: string;
-  title: string;
-  detail?: string;
-  /** Approval requests take a decision; questions take answers. */
-  isApproval: boolean;
-  /** For `user_input`: the questions, answered in order. */
-  questions?: T3Question[];
-  /** False when the agent can no longer take the answer here (answer it in T3). */
-  answerable: boolean;
-  /** Questions T3 lets the user skip without answering. */
-  dismissible: boolean;
 }
 
 export interface T3Step {
@@ -167,6 +131,7 @@ interface ItemCursor {
   textLength: number;
   started: boolean;
   ended: boolean;
+  rendered?: boolean;
 }
 
 export class T3Timeline {
@@ -175,17 +140,23 @@ export class T3Timeline {
   private items = new Map<string, ItemCursor>();
   private notified = new Set<string>();
   private answered = new Set<string>();
+  /** Finished runs with nothing left to emit, and how many items they had then. */
+  private settled = new Map<string, number>();
+  /** The text item the last emitted event streamed, while nothing else came after it. */
+  private lastText: { itemId: string; kind: "delta" | "thinking" } | null = null;
 
   /** Emits what changed since the last projection. */
   step(projection: T3Projection): T3Step {
-    const runs = [...projection.runs].sort((a, b) => a.ordinal - b.ordinal).concat(foreignRuns(projection));
+    // Items sorted once; each run's list keeps that order.
+    const turnItems = [...projection.turnItems].sort((a, b) => a.ordinal - b.ordinal);
+    const runs = [...projection.runs].sort((a, b) => a.ordinal - b.ordinal).concat(foreignRuns(projection, turnItems));
     const reset = this.needsReset(projection);
     if (reset) this.clear();
 
     const events: AgentEvent[] = [];
     const messages = new Map(projection.messages.map((m) => [m.id, m]));
     const itemsByRun = new Map<string, T3TurnItem[]>();
-    for (const item of projection.turnItems) {
+    for (const item of turnItems) {
       const list = itemsByRun.get(item.runId) ?? [];
       list.push(item);
       itemsByRun.set(item.runId, list);
@@ -194,19 +165,24 @@ export class T3Timeline {
     const requests = new Map(projection.runtimeRequests.map((r) => [r.id, r]));
     for (const run of runs) {
       if (run.status === "rolled_back") continue;
+      const items = itemsByRun.get(run.id) ?? [];
+      if (this.settled.get(run.id) === items.length) continue;
+      this.settled.delete(run.id);
       if (!this.userShown.has(run.id)) {
-        const text = run.userMessageId ? messages.get(run.userMessageId)?.text : undefined;
-        if (text?.trim()) events.push({ kind: "user", text });
+        const message = run.userMessageId ? messages.get(run.userMessageId) : undefined;
+        const text = message?.text ?? "";
+        const images = messageImages(message?.attachments);
+        if (images.length) this.push(events, { kind: "user", text, images });
+        else if (text.trim()) this.push(events, { kind: "user", text });
         this.userShown.add(run.id);
       }
-      for (const item of (itemsByRun.get(run.id) ?? []).sort((a, b) => a.ordinal - b.ordinal)) {
-        events.push(...this.itemEvents(item, requests));
-      }
+      for (const item of items) this.itemEvents(events, item, requests);
       if (FINISHED_RUN.has(run.status) && !this.doneShown.has(run.id)) {
-        if (run.status === "failed") events.push({ kind: "error", message: "The run failed in T3." });
-        events.push({ kind: "done" });
+        if (run.status === "failed") this.push(events, { kind: "error", message: "The run failed in T3." });
+        this.push(events, { kind: "done" });
         this.doneShown.add(run.id);
       }
+      if (FINISHED_RUN.has(run.status) && items.every((item) => this.itemSettled(item))) this.settled.set(run.id, items.length);
     }
 
     const activeRun = [...runs].reverse().find((run) => ACTIVE_RUN.has(run.status));
@@ -230,31 +206,47 @@ export class T3Timeline {
     };
   }
 
-  private itemEvents(item: T3TurnItem, requests: Map<string, T3RuntimeRequest>): AgentEvent[] {
+  private push(events: AgentEvent[], evt: AgentEvent, textItemId?: string) {
+    events.push(evt);
+    // A tool ending doesn't close the open text block on the page, so text after it still needs its paragraph break.
+    if (evt.kind === "tool-end") return;
+    this.lastText = textItemId && (evt.kind === "delta" || evt.kind === "thinking") ? { itemId: textItemId, kind: evt.kind } : null;
+  }
+
+  private itemEvents(events: AgentEvent[], item: T3TurnItem, requests: Map<string, T3RuntimeRequest>) {
     const cursor = this.items.get(item.id) ?? { textLength: 0, started: false, ended: false };
     this.items.set(item.id, cursor);
-    const events: AgentEvent[] = [];
 
     if (TEXT_ITEMS.has(item.type)) {
       const text = item.text ?? "";
       if (text.length > cursor.textLength) {
-        const delta = text.slice(cursor.textLength);
-        events.push(item.type === "reasoning" ? { kind: "thinking", text: delta } : { kind: "delta", text: delta });
+        const kind = item.type === "reasoning" ? "thinking" : "delta";
+        let delta = text.slice(cursor.textLength);
+        // Two messages in a row would fold into one block and run together
+        // ("…done.Next…"): the second starts a new paragraph.
+        if (this.lastText && this.lastText.kind === kind && this.lastText.itemId !== item.id) delta = `\n\n${delta}`;
+        this.push(events, { kind, text: delta }, item.id);
         cursor.textLength = text.length;
       }
-      return events;
+      return;
     }
 
     if (TOOL_ITEMS.has(item.type)) {
       if (!cursor.started) {
-        events.push({ kind: "tool-start", toolId: item.id, name: toolName(item), detail: toolDetail(item) });
+        this.push(events, { kind: "tool-start", toolId: item.id, name: toolName(item), detail: toolDetail(item) });
         cursor.started = true;
       }
       if (FINISHED_ITEM.has(item.status) && !cursor.ended) {
-        events.push({ kind: "tool-end", toolId: item.id, ok: item.status === "completed" });
+        this.push(events, { kind: "tool-end", toolId: item.id, ok: item.status === "completed" });
         cursor.ended = true;
       }
-      return events;
+      if (item.status === "completed" && !cursor.rendered) {
+        const artifact = htmlRenderArtifact(item);
+        if (artifact) this.push(events, { kind: "html-render", artifact });
+        // An html_render page whose output hasn't arrived yet is looked for again next step.
+        if (artifact || !isHtmlRenderTool(item)) cursor.rendered = true;
+      }
+      return;
     }
 
     if (item.type === "user_input_request" && !this.answered.has(item.id)) {
@@ -264,17 +256,28 @@ export class T3Timeline {
       if (answers) {
         // The user's answer reads as their reply, between the question and what the agent did with it.
         const lines = answerLines(item.questions ?? [], answers);
-        if (lines.length) events.push({ kind: "user", text: lines.join("\n") });
+        if (lines.length) this.push(events, { kind: "user", text: lines.join("\n") });
         this.answered.add(item.id);
       }
-      return events;
+      return;
     }
 
     if (item.type === "notification" && item.summary && !this.notified.has(item.id)) {
-      events.push({ kind: "status", text: item.summary });
+      this.push(events, { kind: "status", text: item.summary });
       this.notified.add(item.id);
     }
-    return events;
+  }
+
+  /** Whether an item has emitted all it ever will, so its finished run can be skipped. */
+  private itemSettled(item: T3TurnItem): boolean {
+    if (TEXT_ITEMS.has(item.type)) return FINISHED_ITEM.has(item.status);
+    if (TOOL_ITEMS.has(item.type)) {
+      if (item.status === "completed" && isHtmlRenderTool(item)) return this.items.get(item.id)?.rendered === true;
+      return FINISHED_ITEM.has(item.status);
+    }
+    if (item.type === "user_input_request") return this.answered.has(item.id);
+    if (item.type === "notification") return this.notified.has(item.id) || FINISHED_ITEM.has(item.status);
+    return true;
   }
 
   /** A rollback or a rewritten history: something already shown is gone or got shorter. */
@@ -297,16 +300,18 @@ export class T3Timeline {
     this.items.clear();
     this.notified.clear();
     this.answered.clear();
+    this.settled.clear();
+    this.lastText = null;
   }
 }
 
 /** Sub-threads have no runs of their own: their items carry the parent
  * thread's run ids. Group those into stand-in runs, in item order, that
- * count as finished once every item has. */
-function foreignRuns(projection: T3Projection): T3Run[] {
+ * count as finished once every item has. `turnItems` is sorted by ordinal. */
+function foreignRuns(projection: T3Projection, turnItems: T3TurnItem[]): T3Run[] {
   const known = new Set(projection.runs.map((r) => r.id));
   const groups = new Map<string, T3TurnItem[]>();
-  for (const item of [...projection.turnItems].sort((a, b) => a.ordinal - b.ordinal)) {
+  for (const item of turnItems) {
     if (known.has(item.runId)) continue;
     const list = groups.get(item.runId) ?? [];
     list.push(item);
@@ -456,6 +461,78 @@ function presentBackgroundWork(tasks: PendingWork["tasks"]): T3BackgroundWork | 
   for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
   const groups = [...counts].map(([kind, count]) => `${count} ${count === 1 ? BACKGROUND_KINDS[kind].singular : BACKGROUND_KINDS[kind].plural}`);
   return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
+}
+
+// MARK: - Images and pages
+
+const T3_ATTACHMENT_ID = /^[a-z0-9_-]{1,256}$/i;
+
+function attachmentUrl(id: string): string {
+  return `/api/t3/attachments/${encodeURIComponent(id)}`;
+}
+
+/** The images among a message's attachments. */
+export function messageImages(attachments: T3Attachment[] | undefined): ChatImage[] {
+  return (attachments ?? [])
+    .filter((a) => a.type === "image" && typeof a.id === "string" && T3_ATTACHMENT_ID.test(a.id))
+    .map((a) => ({ url: attachmentUrl(a.id), name: a.name?.trim() || "Image" }));
+}
+
+const HTML_RENDER_MIN_HEIGHT = 80;
+const HTML_RENDER_MAX_HEIGHT = 2000;
+const OUTLINE = /^[tmg]\d{1,4},\d{1,4},[1-9]\d{0,3},[1-9]\d{0,3},[1-9]\d{0,2}(?:;[tmg]\d{1,4},\d{1,4},[1-9]\d{0,3},[1-9]\d{0,3},[1-9]\d{0,2}){0,47}$/;
+
+function clampHeight(height: number): number {
+  return Math.min(HTML_RENDER_MAX_HEIGHT, Math.max(HTML_RENDER_MIN_HEIGHT, Math.round(height)));
+}
+
+/** The `htmlRender` reference in a tool result: compacted (`{ htmlRender }`), in
+ * `structuredContent` or `content`, as JSON text, or in a text content block. */
+function htmlRenderReference(value: unknown, depth: number): Record<string, unknown> | null {
+  if (depth > 4 || value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    if (value.length > 16_384) return null;
+    try { return htmlRenderReference(JSON.parse(value), depth + 1); } catch { return null; }
+  }
+  if (Array.isArray(value)) {
+    for (const block of value.slice(0, 32)) {
+      const text = (block as { text?: unknown } | null)?.text;
+      const ref = htmlRenderReference(typeof text === "object" && text !== null ? (text as { text?: unknown }).text ?? text : text, depth + 1);
+      if (ref) return ref;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (record.isError === true || record.is_error === true || (record.error !== undefined && record.error !== null)) return null;
+  if (record.htmlRender && typeof record.htmlRender === "object") return record.htmlRender as Record<string, unknown>;
+  return htmlRenderReference(record.structuredContent ?? record.content, depth + 1);
+}
+
+/** The page a completed `html_render` call published, read as T3's `readHtmlRenderReference` reads it. */
+function isHtmlRenderTool(item: Pick<T3TurnItem, "type" | "toolName">): boolean {
+  return item.type === "dynamic_tool" && /(?:^|__)html_render$/.test(item.toolName ?? "");
+}
+
+export function htmlRenderArtifact(item: Pick<T3TurnItem, "id" | "type" | "toolName" | "output">): HtmlArtifact | null {
+  if (!isHtmlRenderTool(item)) return null;
+  const ref = htmlRenderReference(item.output, 0);
+  if (!ref) return null;
+  const { attachmentId, title, height, heights, outline } = ref;
+  if (typeof attachmentId !== "string" || !T3_ATTACHMENT_ID.test(attachmentId)) return null;
+  if (typeof height !== "number" || !Number.isFinite(height)) return null;
+  const measured = Array.isArray(heights) && heights.length > 0 && heights.length <= 24
+    && heights.every((h) => Array.isArray(h) && h.length === 2 && Number.isInteger(h[0]) && h[0] >= 1 && h[0] <= 10_000 && typeof h[1] === "number" && Number.isFinite(h[1]))
+    ? (heights as [number, number][]).map(([w, h]) => [w, clampHeight(h)] as [number, number]).sort((a, b) => a[0] - b[0])
+    : undefined;
+  return {
+    id: attachmentId,
+    url: attachmentUrl(attachmentId),
+    title: (typeof title === "string" ? title.trim().slice(0, 200) : "") || "HTML",
+    height: clampHeight(height),
+    ...(measured ? { heights: measured } : {}),
+    ...(measured && typeof outline === "string" && OUTLINE.test(outline) ? { outline } : {}),
+  };
 }
 
 function toolName(item: T3TurnItem): string {

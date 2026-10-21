@@ -119,6 +119,16 @@ assert(themeVars["--bg-html"] === "transparent", "transparent theme vars should 
 assert(themeVars["--bg-body"] === "rgba(17, 34, 51, 0.72)", `transparent theme vars should use theme opacity: ${themeVars["--bg-body"]}`);
 assert(themeVars["--ansi-bright-blue"] === "#0000ff", "theme vars should include named ANSI colors");
 assert(themeCssVars(fakeTheme).includes("--font-mono"), "theme CSS should include resolved font variables");
+assert(themeVars["--color-scheme"] === "dark", "dark theme should set color-scheme dark");
+assert(themeVars["--code-blue"] === "var(--ansi-bright-blue)", "dark theme code colors should use bright ANSI slots");
+assert(themeVars["--status-mix"] === "100%", "dark theme status colors should be used as-is");
+assert(themeVars["--on-accent"] === "#ffffff", `text on a dark accent should be white, got ${themeVars["--on-accent"]}`);
+const lightVars = themeVarMap({ ...fakeTheme, background: "#fafafa", foreground: "#202020", isLight: true, accent: "#f0c674" });
+assert(lightVars["--color-scheme"] === "light", "light theme should set color-scheme light");
+assert(lightVars["--code-blue"] === "var(--ansi-blue)", "light theme code colors should use normal ANSI slots");
+assert(lightVars["--status-mix"] !== "100%", "light theme status text should lean toward the foreground");
+assert(lightVars["--on-accent"] === "#000000", `text on a pale accent should be black, got ${lightVars["--on-accent"]}`);
+assert(lightVars["--shadow"] !== themeVars["--shadow"], "light themes should use a lighter popup shadow");
 const themeMsg = JSON.parse(themeMessageForTest(fakeTheme));
 assert(themeMsg.kind === "theme" && themeMsg.vars["--accent"] === "#000011", "theme WS message should carry the resolved variable map");
 const monokaiTheme = {
