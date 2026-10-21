@@ -30,6 +30,7 @@ import { isGitHubLink, isWorkspaceId } from "./src/threadLinks";
 import { cmuxRpc } from "./cmux-rpc";
 import { localImageResponse, t3AttachmentResponse } from "./media";
 import { loadOrCreateRemoteToken, remoteConfig, remoteHostTrusted, remoteOriginTrusted, type RemoteConfig } from "./remote";
+import { defaultPushFile, parseSubscription, PushStore, sendPush, startThreadNotifier } from "./push";
 import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -96,29 +97,31 @@ interface Listener {
   prefix: string;
   /** The phone listener: the page gets a way home and is installable. */
   remote: boolean;
+  /** The phone listener's notifications (push.ts); null when they couldn't be set up. */
+  push: PushStore | null;
   trustedHost(req: Request): boolean;
   trustedOrigin(req: Request): boolean;
   prefixed(path: string): string;
 }
 
-function makeListener(token: string, remote: boolean, trust: Pick<Listener, "trustedHost" | "trustedOrigin">): Listener {
+function makeListener(token: string, remote: boolean, push: PushStore | null, trust: Pick<Listener, "trustedHost" | "trustedOrigin">): Listener {
   const prefix = token ? `/${encodeURIComponent(token)}` : "";
-  return { token, prefix, remote, ...trust, prefixed: (path) => `${prefix}${path}` };
+  return { token, prefix, remote, push, ...trust, prefixed: (path) => `${prefix}${path}` };
 }
 
-const localListener = makeListener(AUTH_TOKEN, false, { trustedHost: hasTrustedHost, trustedOrigin: hasTrustedOrigin });
+const localListener = makeListener(AUTH_TOKEN, false, null, { trustedHost: hasTrustedHost, trustedOrigin: hasTrustedOrigin });
 
-function remoteListener(token: string, extraHosts: string[]): Listener {
-  return makeListener(token, true, {
+function remoteListener(token: string, extraHosts: string[], push: PushStore | null = null): Listener {
+  return makeListener(token, true, push, {
     trustedHost: (req) => remoteHostTrusted(req.headers.get("host"), extraHosts),
     trustedOrigin: (req) => remoteOriginTrusted(req.headers.get("origin"), req.headers.get("host"), extraHosts),
   });
 }
 
 /** Handles a request as the phone listener would, for tests. */
-export function handleRemoteFetchForTest(req: Request, token: string, extraHosts: string[] = []): Promise<Response | undefined> {
+export function handleRemoteFetchForTest(req: Request, token: string, extraHosts: string[] = [], push: PushStore | null = null): Promise<Response | undefined> {
   const srv = { port: 0, upgrade: () => false } as unknown as Bun.Server<WsData>;
-  return handleFetch(req, srv, remoteListener(token, extraHosts));
+  return handleFetch(req, srv, remoteListener(token, extraHosts, push));
 }
 
 /** Starts the phone listener when `--remote` asks for it. A busy port is
@@ -132,13 +135,20 @@ function startRemoteServer() {
     return;
   }
   if (!config) return;
-  let listener: Listener;
+  let token: string;
   try {
-    listener = remoteListener(loadOrCreateRemoteToken(config.tokenFile), config.extraHosts);
+    token = loadOrCreateRemoteToken(config.tokenFile);
   } catch (err) {
     console.error(`phone access is off: couldn't read or save its token: ${String(err)}`);
     return;
   }
+  let push: PushStore | null = null;
+  try {
+    push = new PushStore(defaultPushFile(), token);
+  } catch (err) {
+    console.error(`phone notifications are off: couldn't read or save their keys: ${String(err)}`);
+  }
+  const listener = remoteListener(token, config.extraHosts, push);
   try {
     const server = Bun.serve<WsData>({
       port: config.port,
@@ -147,6 +157,7 @@ function startRemoteServer() {
       websocket: websocketHandlers,
     });
     console.log(`phone access listening on http://127.0.0.1:${server.port} (run \`bun remote.ts\` for the link)`);
+    if (push) startThreadNotifier(push, t3OpenThreads);
   } catch (err) {
     console.error(`phone access is off: port ${config.port} is busy (${String(err)})`);
   }
@@ -2371,6 +2382,38 @@ function assetResponse(req: Request, asset: StaticAsset): Response {
   });
 }
 
+const PUSH_WELCOME = { title: "cmux", body: "Notifications are on. You'll hear from this Mac when a thread needs you or finishes.", tag: "welcome" };
+
+async function handlePushRoute(req: Request, url: URL, listener: Listener, push: PushStore): Promise<Response | null> {
+  // The service worker sits under the token, so its scope is the phone app and nothing else.
+  if (url.pathname === "/sw.js" && req.method === "GET") {
+    return new Response(Bun.file(join(ROOT, "public", "sw.js")), {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+    });
+  }
+  if (url.pathname === "/api/push" && req.method === "GET") return Response.json({ publicKey: push.keys.publicKey });
+  const action = url.pathname.match(/^\/api\/push\/(subscribe|unsubscribe)$/)?.[1];
+  if (!action || req.method !== "POST") return null;
+  if (!listener.trustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+  const body = (await req.json().catch(() => null)) as any;
+  if (action === "unsubscribe") {
+    push.remove(String(body?.endpoint ?? ""));
+    return Response.json({ ok: true });
+  }
+  const subscription = parseSubscription(body);
+  if (!subscription) return Response.json({ error: "Not a push subscription from a browser's push service" }, { status: 400 });
+  push.add(subscription);
+  // Only a new phone gets the welcome; re-sending on every page load would be noise.
+  if (body?.welcome === true) {
+    const result = await sendPush(subscription, PUSH_WELCOME, push.keys);
+    if (result !== "sent") {
+      push.remove(subscription.endpoint);
+      return Response.json({ error: "The push service refused this Mac's first notification" }, { status: 502 });
+    }
+  }
+  return Response.json({ ok: true });
+}
+
 async function handleFetch(req: Request, srv: Bun.Server<WsData>, listener: Listener): Promise<Response | undefined> {
   const originalUrl = new URL(req.url);
   if (!listener.trustedHost(req)) return new Response("forbidden", { status: 403 });
@@ -2390,6 +2433,11 @@ async function handleFetch(req: Request, srv: Bun.Server<WsData>, listener: List
     return new Response(Bun.file(join(ROOT, "public", url.pathname.slice(1))), {
       headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" },
     });
+  }
+  // Phone notifications (push.ts): the service worker and the subscriptions.
+  if (listener.push) {
+    const pushResponse = await handlePushRoute(req, url, listener, listener.push);
+    if (pushResponse) return pushResponse;
   }
   // Pasted images and `html_render` pages in T3 chats, by attachment id.
   const attachment = url.pathname.match(/^\/api\/t3\/attachments\/([^/?#]{1,256})$/);

@@ -83,6 +83,14 @@ iPhone Safari ──https──▶ Tailscale ──▶ tailscale serve on the Ma
 
 On the phone, `/home` lists the open T3 threads by project, the way Agent Home does (`adapters/t3-threads.ts` reads T3's database with the same rules), marked Needs you, Working or New, and re-reads them every 5 s while the page is on screen. A thread opens as its chat; New chat starts a T3 thread. Opening a thread on the phone marks it read in T3. Chats get a "‹ Threads" link back, and the page keeps clear of the notch and home indicator.
 
+### Notifications
+
+The home-screen app can notify you when a T3 thread needs you (a question, an approval) or a task finishes. Open the app from the Home Screen, tap **Turn on notifications** at the top of the thread list and allow them; a "Notifications are on" message confirms it works. Safari only offers push to a home-screen app, so in a Safari tab the list says to add it first. A tap on a notification opens that thread, and the app icon's badge counts the threads waiting on you.
+
+It's standard Web Push (`push.ts`, `public/sw.js`), with nothing to sign up for. The phone subscribes with its browser's push service (Apple's, for an iPhone). The sidecar re-reads the open threads every 5 s while a phone is subscribed, and sends each change to that service, encrypted for the phone (RFC 8291) and signed with the Mac's own key (VAPID). Apple carries the message but can't read it, and the phone needn't be on Tailscale to receive it; opening the thread still goes over the tailnet. Sub-agents finishing don't notify; a sub-agent that needs you does.
+
+The Mac's key and the subscribed phones are in `~/.config/cmux/agent-chat-push.json` (mode 0600, `CMUX_AGENT_CHAT_PUSH_FILE` moves it). Subscriptions belong to the phone token, so revoking the token also stops notifications. Tapping **Notifications on** turns them off for that phone.
+
 The Mac has to be awake with the sidecar running. cmux starts the sidecar the first time a chat opens, so after the Mac restarts, open any chat in cmux once.
 
 ## Architecture
