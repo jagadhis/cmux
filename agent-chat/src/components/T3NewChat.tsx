@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useCtx } from "../context";
-import type { T3FullSelection, T3ModelProvider, T3Project } from "../session";
+import { onPhone, type T3FullSelection, type T3ModelProvider, type T3Project } from "../session";
 import { CmdkMenu } from "./CmdkMenu";
 import { isCtrlJ, insertNewlineAtCaret } from "./CommandMenu";
 import { ArrowUp, FolderIcon, PinwheelSpinner, PlanIcon, ShieldIcon } from "./icons";
@@ -203,7 +203,8 @@ export function T3NewChat() {
       </div>
       {t3Projects && !t3Projects.length ? <div className="composer-error">{T3_NEW_CHAT_TEXT.noProjects}</div> : null}
       {lastError ? <div className="composer-error">{lastError}</div> : null}
-      <div id="composer-hint">{ready ? T3_NEW_CHAT_TEXT.hint : T3_NEW_CHAT_TEXT.connecting}</div>
+      {/* The keys in the hint mean nothing on a phone's keyboard. */}
+      {ready && onPhone ? null : <div id="composer-hint">{ready ? T3_NEW_CHAT_TEXT.hint : T3_NEW_CHAT_TEXT.connecting}</div>}
     </section>
   );
 }

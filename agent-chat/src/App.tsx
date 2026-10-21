@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Tooltip } from "@base-ui-components/react/tooltip";
-import { routedToT3NewChat, useSession, type SessionState } from "./session";
+import { appPath, onPhone, routedToT3NewChat, useSession, type SessionState } from "./session";
 import { RepositorySlugContext, SessionContext, SessionCwdContext } from "./context";
 import { Composer } from "./components/Composer";
 import { Chat } from "./components/Chat";
@@ -23,6 +23,7 @@ export function App() {
         <RepositorySlugContext.Provider value={repositorySlug}>
           <SessionCwdContext.Provider value={s.session?.cwd || null}>
             <main id="main">
+              {onPhone ? <PhoneBar /> : null}
               {s.phase === "chat" ? <Chat /> : routedToT3NewChat ? <T3NewChat /> : !s.ready ? null : <Composer />}
             </main>
             <MediaViewer />
@@ -30,6 +31,15 @@ export function App() {
         </RepositorySlugContext.Provider>
       </SessionContext.Provider>
     </Tooltip.Provider>
+  );
+}
+
+/// Phone access: the way back to the thread list, above the chat.
+function PhoneBar() {
+  return (
+    <nav className="phone-bar">
+      <a href={appPath("/home")}>‹ Threads</a>
+    </nav>
   );
 }
 

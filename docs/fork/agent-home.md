@@ -221,6 +221,7 @@ CMUX_DEV_BACKEND_MODE=local CMUX_STAGING_LOCAL_SIGNING=1 ./scripts/reloads.sh --
   - `agentChat.startCommand` in `~/.config/cmux/cmux.json`, which runs `agent-chat/server.ts` from this checkout with bun. Keep this checkout in place.
   - T3 Code running, and the Keychain token `cmux-agent-home-t3-token`.
   - A `~/projects/t3code` checkout close to the installed T3 version.
+- **Phone access:** with `--remote` added to `agentChat.startCommand` and `tailscale serve --bg 7740` run once, the T3 threads and chats open in Safari on the iPhone from anywhere on the tailnet. `bun agent-chat/remote.ts --copy` gives the link. See "Phone access" in `agent-chat/README.md`.
 
 To rebuild without closing the copy you're using, set `CMUX_RELOADS_BUILD_ONLY=1`. The build is then left in DerivedData and nothing is quit or launched. To install it, quit cmux Home and run:
 

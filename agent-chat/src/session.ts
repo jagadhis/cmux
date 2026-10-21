@@ -346,7 +346,7 @@ export interface SessionState {
 }
 
 declare global {
-  interface Window { __AGENT_CHAT_BASE__?: string }
+  interface Window { __AGENT_CHAT_BASE__?: string; __AGENT_CHAT_REMOTE__?: boolean }
 }
 
 function basePrefix(): string {
@@ -363,11 +363,15 @@ function routePath(): string {
   return location.pathname.startsWith(base + "/") ? location.pathname.slice(base.length) : location.pathname;
 }
 
-function appPath(path: string): string {
+export function appPath(path: string): string {
   return `${basePrefix()}${path}`;
 }
 
 const routedSessionId = (routePath().match(/^\/s\/([\w-]+)/) || [])[1] || null;
+/** Opened through phone access (remote.ts) rather than inside cmux. */
+export const onPhone = typeof window !== "undefined" && window.__AGENT_CHAT_REMOTE__ === true;
+/** The phone's home page: open T3 threads and New chat. */
+export const routedToHome = /^\/home\/?$/.test(routePath());
 /** cmux Agent Home's New chat pane: a composer that starts a T3 thread. */
 export const routedToT3NewChat = /^\/t3\/new\/?$/.test(routePath());
 /** Transcript views use `t-<agent session id>`; known before history arrives. */

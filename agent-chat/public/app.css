@@ -1220,3 +1220,58 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
   position: static; width: 100%; max-width: 100%; min-height: 300px;
 }
 .gallery-picker-static .model-picker-shell { height: 340px; }
+
+/* ---------- phone access (remote.ts) ---------- */
+/* The page fills the screen edge to edge as a home-screen app, so content
+   keeps clear of the notch and the home indicator. */
+.phone #main { padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+/* iOS zooms into any field under 16px when it's focused. */
+.phone textarea, .phone input { font-size: 16px !important; }
+.phone #composer-view { justify-content: flex-start; padding: 12px; }
+.phone #chat-input-row { padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
+.phone-bar { flex: none; display: flex; align-items: center; padding: 10px 14px 6px; }
+.phone-bar a { color: var(--accent); text-decoration: none; font-size: calc(var(--font-size-base) + 1px); }
+
+.home {
+  height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: calc(env(safe-area-inset-top) + 12px) max(16px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 24px) max(16px, env(safe-area-inset-left));
+  max-width: 760px; margin: 0 auto;
+}
+.home-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 10px; }
+.home-header h1 { margin: 0; font-size: calc(var(--font-size-base) + 12px); font-weight: 650; letter-spacing: -.01em; }
+.home-new {
+  background: var(--accent); color: var(--on-accent, var(--bg)); text-decoration: none;
+  border-radius: 999px; padding: 7px 16px; font-weight: 600;
+}
+.home-summary { display: flex; gap: 8px; padding-bottom: 6px; }
+.home-note { color: var(--text-dim); margin: 18px 0; }
+.home-error { color: var(--red-text); }
+.home-project { margin-top: 18px; }
+.home-project h2 {
+  margin: 0 0 6px; font-size: calc(var(--font-size-base) - 2px); font-weight: 600;
+  color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em;
+}
+.home-task { background: var(--bg-raised); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
+.home-row {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px; min-height: 48px;
+  color: var(--text); text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.home-row:active { background: var(--bg-hover); }
+.home-row-child { padding: 8px 14px 8px 32px; min-height: 40px; border-top: 1px solid var(--border); }
+.home-row-child .home-row-title { color: var(--text-dim); font-size: calc(var(--font-size-base) - 1px); }
+.home-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.home-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-row-meta { color: var(--text-faint); font-size: calc(var(--font-size-base) - 2px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
+.home-dot-needs-input { background: var(--amber); opacity: 1; }
+.home-dot-running { background: var(--accent); opacity: 1; animation: home-pulse 1.4s ease-in-out infinite; }
+.home-dot-unread { background: var(--green); opacity: 1; }
+@keyframes home-pulse { 50% { opacity: .35; } }
+.home-state {
+  flex: none; font-size: calc(var(--font-size-base) - 3px); font-weight: 600; border-radius: 999px; padding: 2px 8px;
+  background: color-mix(in srgb, var(--text-faint) 18%, transparent); color: var(--text-dim);
+}
+.home-state-needs-input { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber-text); }
+.home-state-running { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.home-state-unread { background: color-mix(in srgb, var(--green) 22%, transparent); color: var(--green-text); }

@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Adapter, AgentEvent, SessionCtx } from "../types";
 import type { T3Answers, T3Decision, T3LaunchDefaults, T3ModelOption, T3ModelProvider, T3Project } from "../t3-contract";
+import { readOpenT3Threads, type T3ThreadSummary } from "./t3-threads";
 import { T3ThreadMirror, type T3ProjectionReducer, type T3StreamItem } from "./t3-stream";
 import { T3Timeline, type T3BackgroundStop, type T3BackgroundWork, type T3ModelSelection, type T3PendingRequest, type T3Projection, type T3Step } from "./t3-timeline";
 
@@ -525,6 +526,11 @@ export function t3Projects(): T3Project[] {
       defaults: launchDefaultsOf(row),
     }));
   });
+}
+
+/** The threads the phone's home page lists; see `t3-threads.ts`. */
+export function t3OpenThreads(): T3ThreadSummary[] {
+  return withStateDb((db) => readOpenT3Threads(db));
 }
 
 function launchDefaults(projectId: string): T3LaunchDefaults {

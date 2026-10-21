@@ -18,7 +18,7 @@ import { piAdapter } from "./adapters/pi";
 import { makeAcpAdapter } from "./adapters/acp";
 import { attachTranscript, focusTranscriptTerminal, queuedTranscriptMessages, transcriptAdapter, type QueuedAgentMessage, type TranscriptAgent } from "./adapters/transcript";
 import { resolveSessionTranscript, resolveSurfaceTranscript, transcriptAttention, type TranscriptSource } from "./transcript-sources";
-import { answerT3Question, attachT3Thread, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, T3_INTERACTION_MODES, T3_RUNTIME_MODES, t3Adapter, t3BackgroundWork, t3ModelCatalog, t3ModelSelection, t3Projects, t3ThreadAction, t3Usage } from "./adapters/t3";
+import { answerT3Question, attachT3Thread, t3OpenThreads, dismissT3Question, launchT3Thread, respondT3Request, setT3Model, T3_INTERACTION_MODES, T3_RUNTIME_MODES, t3Adapter, t3BackgroundWork, t3ModelCatalog, t3ModelSelection, t3Projects, t3ThreadAction, t3Usage } from "./adapters/t3";
 import type { T3BackgroundWork, T3ModelSelection, T3PendingRequest } from "./adapters/t3-timeline";
 import { pickAccentColor, resolveGhosttyTheme, resolveGhosttyThemeAsync, schemeVars, type GhosttyTheme } from "./theme";
 import { agentModelCatalog, type AgentModelProviderCatalog } from "./catalog";
@@ -29,6 +29,7 @@ import { gitHubSlugFromRemoteURL } from "./src/githubReferences";
 import { isGitHubLink, isWorkspaceId } from "./src/threadLinks";
 import { cmuxRpc } from "./cmux-rpc";
 import { localImageResponse, t3AttachmentResponse } from "./media";
+import { loadOrCreateRemoteToken, remoteConfig, remoteHostTrusted, remoteOriginTrusted, type RemoteConfig } from "./remote";
 import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -84,17 +85,71 @@ function stripAuthPrefixWithToken(url: URL, token: string): URL | null {
   return next;
 }
 
-function stripAuthPrefix(url: URL): URL | null {
-  return stripAuthPrefixWithToken(url, AUTH_TOKEN);
-}
-
 export function stripAuthPrefixForTest(path: string, token: string): string | null {
   const stripped = stripAuthPrefixWithToken(new URL(`http://127.0.0.1${path}`), token);
   return stripped?.pathname ?? null;
 }
 
-function prefixedPath(path: string): string {
-  return `${AUTH_PREFIX}${path}`;
+/** One way into the sidecar: cmux's loopback listener, or the phone's (remote.ts). */
+interface Listener {
+  token: string;
+  prefix: string;
+  /** The phone listener: the page gets a way home and is installable. */
+  remote: boolean;
+  trustedHost(req: Request): boolean;
+  trustedOrigin(req: Request): boolean;
+  prefixed(path: string): string;
+}
+
+function makeListener(token: string, remote: boolean, trust: Pick<Listener, "trustedHost" | "trustedOrigin">): Listener {
+  const prefix = token ? `/${encodeURIComponent(token)}` : "";
+  return { token, prefix, remote, ...trust, prefixed: (path) => `${prefix}${path}` };
+}
+
+const localListener = makeListener(AUTH_TOKEN, false, { trustedHost: hasTrustedHost, trustedOrigin: hasTrustedOrigin });
+
+function remoteListener(token: string, extraHosts: string[]): Listener {
+  return makeListener(token, true, {
+    trustedHost: (req) => remoteHostTrusted(req.headers.get("host"), extraHosts),
+    trustedOrigin: (req) => remoteOriginTrusted(req.headers.get("origin"), req.headers.get("host"), extraHosts),
+  });
+}
+
+/** Handles a request as the phone listener would, for tests. */
+export function handleRemoteFetchForTest(req: Request, token: string, extraHosts: string[] = []): Promise<Response | undefined> {
+  const srv = { port: 0, upgrade: () => false } as unknown as Bun.Server<WsData>;
+  return handleFetch(req, srv, remoteListener(token, extraHosts));
+}
+
+/** Starts the phone listener when `--remote` asks for it. A busy port is
+ * logged, not fatal: cmux's own listener keeps working. */
+function startRemoteServer() {
+  let config: RemoteConfig | null;
+  try {
+    config = remoteConfig();
+  } catch (err) {
+    console.error(`phone access is off: ${String(err)}`);
+    return;
+  }
+  if (!config) return;
+  let listener: Listener;
+  try {
+    listener = remoteListener(loadOrCreateRemoteToken(config.tokenFile), config.extraHosts);
+  } catch (err) {
+    console.error(`phone access is off: couldn't read or save its token: ${String(err)}`);
+    return;
+  }
+  try {
+    const server = Bun.serve<WsData>({
+      port: config.port,
+      hostname: "127.0.0.1",
+      fetch: (req, srv) => handleFetch(req, srv, listener),
+      websocket: websocketHandlers,
+    });
+    console.log(`phone access listening on http://127.0.0.1:${server.port} (run \`bun remote.ts\` for the link)`);
+  } catch (err) {
+    console.error(`phone access is off: port ${config.port} is busy (${String(err)})`);
+  }
 }
 
 async function writeStateFilePath(path: string, port: number) {
@@ -1859,8 +1914,9 @@ function iconResponse(url: URL): Response {
 }
 
 const providerIconInfo = new Map(PROVIDERS.map((p) => {
-  const iconUrl = iconFile(p.id, false) ? prefixedPath(`/icons/${p.id}`) : undefined;
-  const iconDarkUrl = p.id === "codex" && iconFile(p.id, true) ? `${prefixedPath(`/icons/${p.id}`)}?dark=1` : undefined;
+  // Relative to the page's <base>, so they work under either listener's token.
+  const iconUrl = iconFile(p.id, false) ? `icons/${p.id}` : undefined;
+  const iconDarkUrl = p.id === "codex" && iconFile(p.id, true) ? `icons/${p.id}?dark=1` : undefined;
   return [p.id, { ...(iconUrl ? { iconUrl } : {}), ...(iconDarkUrl ? { iconDarkUrl } : {}) }];
 }));
 
@@ -2128,7 +2184,25 @@ export function themeMessageForTest(theme: GhosttyTheme): string {
 // appended by openers that created the browser surface with
 // transparent_background, so only genuinely transparent surfaces get an alpha
 // body; `?opacity=` is a dogfood override.
-function renderPage(url: URL, prefix = AUTH_PREFIX): string {
+/** The home-screen app's manifest. Paths are relative to it, so they stay under the phone token. */
+function manifestResponse(): Response {
+  const background = /^#[0-9a-f]{6}$/i.test(currentTheme.background) ? currentTheme.background : "#000000";
+  return Response.json({
+    name: "cmux",
+    short_name: "cmux",
+    start_url: "home",
+    scope: "./",
+    display: "standalone",
+    background_color: background,
+    theme_color: background,
+    icons: [
+      { src: "apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+      { src: "icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  }, { headers: { "content-type": "application/manifest+json" } });
+}
+
+function renderPage(url: URL, prefix = AUTH_PREFIX, remote = false): string {
   if (!cmuxThemeOverride) {
     fileTheme = resolveGhosttyTheme();
     currentTheme = fileTheme;
@@ -2147,10 +2221,17 @@ function renderPage(url: URL, prefix = AUTH_PREFIX): string {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cmux agent</title>
-<base href="${base}">
-<script>window.__AGENT_CHAT_BASE__=${JSON.stringify(prefix)};</script>
+<meta name="viewport" content="width=device-width, initial-scale=1${remote ? ", viewport-fit=cover" : ""}">
+<title>${remote ? "cmux" : "cmux agent"}</title>
+<base href="${base}">${remote ? `
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="cmux">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="${/^#[0-9a-f]{6}$/i.test(currentTheme.background) ? currentTheme.background : "#000000"}">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">` : ""}
+<script>window.__AGENT_CHAT_BASE__=${JSON.stringify(prefix)};${remote ? "window.__AGENT_CHAT_REMOTE__=true;" : ""}</script>
 <link rel="stylesheet" href="app.css">
 <style>${css}</style>
 </head><body>
@@ -2159,8 +2240,8 @@ function renderPage(url: URL, prefix = AUTH_PREFIX): string {
 </body></html>`;
 }
 
-export function renderPageForTest(pathname: string, prefix = ""): string {
-  return renderPage(new URL(`http://127.0.0.1${pathname}`), prefix);
+export function renderPageForTest(pathname: string, prefix = "", remote = false): string {
+  return renderPage(new URL(`http://127.0.0.1${pathname}`), prefix, remote);
 }
 
 interface StaticAsset {
@@ -2290,204 +2371,218 @@ function assetResponse(req: Request, asset: StaticAsset): Response {
   });
 }
 
+async function handleFetch(req: Request, srv: Bun.Server<WsData>, listener: Listener): Promise<Response | undefined> {
+  const originalUrl = new URL(req.url);
+  if (!listener.trustedHost(req)) return new Response("forbidden", { status: 403 });
+  if (originalUrl.pathname === "/healthz") return new Response("ok");
+  const url = stripAuthPrefixWithToken(originalUrl, listener.token);
+  if (!url) return new Response("not found", { status: 404 });
+  if (url.pathname === "/ws") {
+    if (!listener.trustedOrigin(req)) return new Response("forbidden", { status: 403 });
+    return srv.upgrade(req, { data: { subscribed: null } })
+      ? undefined
+      : new Response("upgrade failed", { status: 400 });
+  }
+  if (url.pathname.startsWith("/icons/")) return iconResponse(url);
+  // Phone access: what Safari's Add to Home Screen reads.
+  if (listener.remote && url.pathname === "/manifest.webmanifest") return manifestResponse();
+  if (listener.remote && (url.pathname === "/apple-touch-icon.png" || url.pathname === "/icon-512.png")) {
+    return new Response(Bun.file(join(ROOT, "public", url.pathname.slice(1))), {
+      headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" },
+    });
+  }
+  // Pasted images and `html_render` pages in T3 chats, by attachment id.
+  const attachment = url.pathname.match(/^\/api\/t3\/attachments\/([^/?#]{1,256})$/);
+  if (attachment && req.method === "GET") return t3AttachmentResponse(attachment[1]);
+  // Local images a reply embeds with Markdown.
+  if (url.pathname === "/api/local-image" && req.method === "GET") return localImageResponse(req, url.searchParams.get("path"));
+  if (url.pathname === "/app.js" || url.pathname === "/gallery.js" || /^\/chunk-[\w-]+\.js$/.test(url.pathname)) {
+    try {
+      const asset = (await buildBundles()).get(url.pathname);
+      if (!asset) return new Response("not found", { status: 404 });
+      return assetResponse(req, asset);
+    } catch (err) {
+      return new Response(`console.error(${JSON.stringify(String(err))})`, {
+        status: 500,
+        headers: { "content-type": "application/javascript; charset=utf-8" },
+      });
+    }
+  }
+  if (url.pathname === "/app.css") {
+    return assetResponse(req, await cssAsset());
+  }
+  if (url.pathname === "/api/theme" && req.method === "POST") {
+    if (!listener.trustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+    try {
+      const theme = validateCmuxThemePayload(await req.json());
+      // cmux's payload has no accent field, so a push must not clobber the
+      // file-configured agent-chat-accent override.
+      if (!theme.accent) theme.accent = fileTheme.accent ?? null;
+      setCurrentTheme(theme, "cmux");
+      broadcastTheme(theme);
+      return Response.json(themeForClient(theme));
+    } catch (err) {
+      return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
+  }
+  if (url.pathname === "/api/theme") {
+    if (!cmuxThemeOverride) {
+      fileTheme = resolveGhosttyTheme();
+      currentTheme = fileTheme;
+      armThemeWatchers(fileTheme);
+    }
+    return Response.json(themeForClient(currentTheme));
+  }
+  // REST for the CLI: create a session (optionally with a first prompt) and
+  // get back its id/url; list sessions.
+  if (url.pathname === "/api/sessions" && req.method === "POST") {
+    if (!listener.trustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+    const body = await req.json().catch(() => ({}));
+    const provider = String(body.provider ?? "claude");
+    const prompt = String(body.prompt ?? "").trim();
+    const cwd = String(body.cwd || DEFAULT_CWD);
+    const title = prompt ? (prompt.length > 64 ? prompt.slice(0, 64) + "…" : prompt) : `${provider} chat`;
+    let sess: Session;
+    try {
+      await assertCwd(cwd);
+      const autoApprove = body.autoApprove !== false;
+      const options = applyAutoApproveDefaults(provider, autoApprove, parseOptions(body.options));
+      sess = createSession(provider, cwd, autoApprove, title, await sanitizeStartOptions(provider, cwd, options));
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 400 });
+    }
+    refreshSession(sess);
+    if (prompt) sendPrompt(sess, prompt);
+    return Response.json({ id: sess.id, url: `http://127.0.0.1:${srv.port}${listener.prefixed(`/s/${sess.id}`)}` });
+  }
+  // cmux Agent Home: provider limits and spend, as T3's Usage page reads them.
+  if (url.pathname === "/api/t3/usage" && req.method === "GET") {
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    const sinceDay = url.searchParams.get("since") ?? "";
+    const untilDay = url.searchParams.get("until") ?? "";
+    const timeZone = url.searchParams.get("tz") || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!day.test(sinceDay) || !day.test(untilDay)) {
+      return Response.json({ error: "since and until must be YYYY-MM-DD" }, { status: 400 });
+    }
+    // Hourly: T3 wants the instants too, at most 24 hours apart.
+    const sinceTime = url.searchParams.get("sinceTime") ?? "";
+    const untilTime = url.searchParams.get("untilTime") ?? "";
+    const hourly = url.searchParams.get("resolution") === "hour" && !isNaN(Date.parse(sinceTime)) && !isNaN(Date.parse(untilTime));
+    try {
+      return Response.json(await t3Usage({
+        sinceDay, untilDay, timeZone,
+        ...(hourly ? { resolution: "hour" as const, sinceTime, untilTime } : {}),
+      }));
+    } catch (err) {
+      return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
+    }
+  }
+  // cmux Agent Home: a GitHub link clicked in a task's chat opens in a browser
+  // split in that task's workspace. Only github.com URLs and a workspace id.
+  if (url.pathname === "/api/open-link" && req.method === "POST") {
+    if (!listener.trustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+    const body = (await req.json().catch(() => ({}))) as { url?: unknown; workspaceId?: unknown };
+    const target = openLinkTarget(body.url, body.workspaceId);
+    if (!target) return Response.json({ error: "A github.com URL and a workspace id are required" }, { status: 400 });
+    const result = await cmuxRpc("browser.open_split", { url: target.url, workspace_id: target.workspaceId });
+    return result.ok ? Response.json({ ok: true }) : Response.json({ error: result.error ?? "cmux refused" }, { status: 502 });
+  }
+  // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
+  const t3Action = url.pathname.match(/^\/api\/t3\/threads\/([^/?#]{8,1600})\/(settle|unsettle|visit)$/);
+  if (t3Action && req.method === "POST") {
+    // cmux posts without an Origin; a page on another origin may not.
+    if (!listener.trustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
+    let threadId = "";
+    try { threadId = decodeURIComponent(t3Action[1]); } catch { /* malformed escape */ }
+    if (!isT3ThreadId(threadId)) return Response.json({ error: "Not a T3 thread id" }, { status: 404 });
+    try {
+      await t3ThreadAction(threadId, t3Action[2] as "settle" | "unsettle" | "visit");
+      return Response.json({ ok: true });
+    } catch (err) {
+      return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
+    }
+  }
+  const t3Match = url.pathname.match(/^\/t3\/([^/?#]{8,1600})\/?$/);
+  if (t3Match && req.method === "GET") {
+    let threadId = "";
+    try { threadId = decodeURIComponent(t3Match[1]); } catch { /* malformed escape */ }
+    if (!isT3ThreadId(threadId)) return new Response("Not a T3 thread id", { status: 404 });
+    const sess = ensureT3Session(threadId);
+    scheduleTranscriptDispose(sess);
+    // On the phone, opening a thread reads it, as in T3. In cmux the sidebar marks it.
+    if (listener.remote) t3ThreadAction(threadId, "visit").catch((err) => console.warn(`T3 visit failed: ${t3Reason(err)}`));
+    return new Response(null, { status: 302, headers: { location: `${listener.prefixed(`/s/${sess.id}`)}${url.search}` } });
+  }
+  const terminalMatch = url.pathname.match(/^\/terminal\/([0-9A-Fa-f-]{8,64})\/?$/);
+  if (terminalMatch && req.method === "GET") {
+    const source = resolveSurfaceTranscript(terminalMatch[1]);
+    if (!source) return transcriptNotFoundPage();
+    const sess = ensureTranscriptSession(source);
+    scheduleTranscriptDispose(sess);
+    return new Response(null, { status: 302, headers: { location: `${listener.prefixed(`/s/${sess.id}`)}${url.search}` } });
+  }
+  if (url.pathname === "/api/sessions" && req.method === "GET") {
+    return Response.json([...sessions.values()].sort((a, b) => b.createdAt - a.createdAt).map(sessionListSummary));
+  }
+  return new Response(renderPage(url, listener.prefix, listener.remote), { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+const websocketHandlers: Bun.WebSocketHandler<WsData> = {
+  open(ws) {
+    allSockets.add(ws);
+    ws.send(JSON.stringify({
+      kind: "hello",
+      providers: PROVIDERS.map(providerInfo),
+      harnessCatalogs,
+      harnesses: [
+        ...harnessRecommendations(),
+        ...discoverHarnesses({ cwd: process.env.CMUX_AGENT_UI_CWD ?? DEFAULT_CWD }),
+      ],
+      capabilities: capabilitiesMap(),
+      defaultCwd: process.env.CMUX_AGENT_UI_CWD ?? DEFAULT_CWD,
+      keys: keyConfig,
+    }));
+    ws.send(JSON.stringify({
+      kind: "sessions",
+      // Queued message bodies go only to the session's own page.
+      sessions: [...sessions.values()].sort((a, b) => b.createdAt - a.createdAt).map((s) => {
+        const { queuedMessages: _queued, ...summary } = sessionSummary(s) as ReturnType<typeof sessionSummary> & { queuedMessages?: unknown };
+        return summary;
+      }),
+    }));
+  },
+  close(ws) {
+    allSockets.delete(ws);
+    const sid = ws.data.subscribed;
+    const sess = sid ? sessions.get(sid) : undefined;
+    if (sess) {
+      sess.sockets.delete(ws);
+      scheduleTranscriptDispose(sess);
+    }
+  },
+  message(ws, raw) {
+    let msg: any;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    try {
+      handleSessionMessage(ws, msg);
+    } catch (err) {
+      sendWsError(ws, String(msg.op ?? ""), err);
+    }
+  },
+};
+
 function startServer() {
   const server = Bun.serve<WsData>({
     port: PORT,
     hostname: "127.0.0.1",
-    async fetch(req, srv) {
-    const originalUrl = new URL(req.url);
-    if (!hasTrustedHost(req)) return new Response("forbidden", { status: 403 });
-    if (originalUrl.pathname === "/healthz") return new Response("ok");
-    const url = stripAuthPrefix(originalUrl);
-    if (!url) return new Response("not found", { status: 404 });
-    if (url.pathname === "/ws") {
-      if (!hasTrustedOrigin(req)) return new Response("forbidden", { status: 403 });
-      return srv.upgrade(req, { data: { subscribed: null } })
-        ? undefined
-        : new Response("upgrade failed", { status: 400 });
-    }
-    if (url.pathname.startsWith("/icons/")) return iconResponse(url);
-    // Pasted images and `html_render` pages in T3 chats, by attachment id.
-    const attachment = url.pathname.match(/^\/api\/t3\/attachments\/([^/?#]{1,256})$/);
-    if (attachment && req.method === "GET") return t3AttachmentResponse(attachment[1]);
-    // Local images a reply embeds with Markdown.
-    if (url.pathname === "/api/local-image" && req.method === "GET") return localImageResponse(req, url.searchParams.get("path"));
-    if (url.pathname === "/app.js" || url.pathname === "/gallery.js" || /^\/chunk-[\w-]+\.js$/.test(url.pathname)) {
-      try {
-        const asset = (await buildBundles()).get(url.pathname);
-        if (!asset) return new Response("not found", { status: 404 });
-        return assetResponse(req, asset);
-      } catch (err) {
-        return new Response(`console.error(${JSON.stringify(String(err))})`, {
-          status: 500,
-          headers: { "content-type": "application/javascript; charset=utf-8" },
-        });
-      }
-    }
-    if (url.pathname === "/app.css") {
-      return assetResponse(req, await cssAsset());
-    }
-    if (url.pathname === "/api/theme" && req.method === "POST") {
-      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
-      try {
-        const theme = validateCmuxThemePayload(await req.json());
-        // cmux's payload has no accent field, so a push must not clobber the
-        // file-configured agent-chat-accent override.
-        if (!theme.accent) theme.accent = fileTheme.accent ?? null;
-        setCurrentTheme(theme, "cmux");
-        broadcastTheme(theme);
-        return Response.json(themeForClient(theme));
-      } catch (err) {
-        return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
-      }
-    }
-    if (url.pathname === "/api/theme") {
-      if (!cmuxThemeOverride) {
-        fileTheme = resolveGhosttyTheme();
-        currentTheme = fileTheme;
-        armThemeWatchers(fileTheme);
-      }
-      return Response.json(themeForClient(currentTheme));
-    }
-    // REST for the CLI: create a session (optionally with a first prompt) and
-    // get back its id/url; list sessions.
-    if (url.pathname === "/api/sessions" && req.method === "POST") {
-      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const body = await req.json().catch(() => ({}));
-      const provider = String(body.provider ?? "claude");
-      const prompt = String(body.prompt ?? "").trim();
-      const cwd = String(body.cwd || DEFAULT_CWD);
-      const title = prompt ? (prompt.length > 64 ? prompt.slice(0, 64) + "…" : prompt) : `${provider} chat`;
-      let sess: Session;
-      try {
-        await assertCwd(cwd);
-        const autoApprove = body.autoApprove !== false;
-        const options = applyAutoApproveDefaults(provider, autoApprove, parseOptions(body.options));
-        sess = createSession(provider, cwd, autoApprove, title, await sanitizeStartOptions(provider, cwd, options));
-      } catch (err) {
-        return Response.json({ error: String(err) }, { status: 400 });
-      }
-      refreshSession(sess);
-      if (prompt) sendPrompt(sess, prompt);
-      return Response.json({ id: sess.id, url: `http://127.0.0.1:${server.port}${prefixedPath(`/s/${sess.id}`)}` });
-    }
-    // cmux Agent Home: provider limits and spend, as T3's Usage page reads them.
-    if (url.pathname === "/api/t3/usage" && req.method === "GET") {
-      const day = /^\d{4}-\d{2}-\d{2}$/;
-      const sinceDay = url.searchParams.get("since") ?? "";
-      const untilDay = url.searchParams.get("until") ?? "";
-      const timeZone = url.searchParams.get("tz") || Intl.DateTimeFormat().resolvedOptions().timeZone;
-      if (!day.test(sinceDay) || !day.test(untilDay)) {
-        return Response.json({ error: "since and until must be YYYY-MM-DD" }, { status: 400 });
-      }
-      // Hourly: T3 wants the instants too, at most 24 hours apart.
-      const sinceTime = url.searchParams.get("sinceTime") ?? "";
-      const untilTime = url.searchParams.get("untilTime") ?? "";
-      const hourly = url.searchParams.get("resolution") === "hour" && !isNaN(Date.parse(sinceTime)) && !isNaN(Date.parse(untilTime));
-      try {
-        return Response.json(await t3Usage({
-          sinceDay, untilDay, timeZone,
-          ...(hourly ? { resolution: "hour" as const, sinceTime, untilTime } : {}),
-        }));
-      } catch (err) {
-        return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
-      }
-    }
-    // cmux Agent Home: a GitHub link clicked in a task's chat opens in a browser
-    // split in that task's workspace. Only github.com URLs and a workspace id.
-    if (url.pathname === "/api/open-link" && req.method === "POST") {
-      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
-      const body = (await req.json().catch(() => ({}))) as { url?: unknown; workspaceId?: unknown };
-      const target = openLinkTarget(body.url, body.workspaceId);
-      if (!target) return Response.json({ error: "A github.com URL and a workspace id are required" }, { status: 400 });
-      const result = await cmuxRpc("browser.open_split", { url: target.url, workspace_id: target.workspaceId });
-      return result.ok ? Response.json({ ok: true }) : Response.json({ error: result.error ?? "cmux refused" }, { status: 502 });
-    }
-    // cmux Agent Home: settle (mark verified), unsettle (undo) or visit (seen) a T3 thread.
-    const t3Action = url.pathname.match(/^\/api\/t3\/threads\/([^/?#]{8,1600})\/(settle|unsettle|visit)$/);
-    if (t3Action && req.method === "POST") {
-      // cmux posts without an Origin; a page on another origin may not.
-      if (!hasTrustedOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
-      let threadId = "";
-      try { threadId = decodeURIComponent(t3Action[1]); } catch { /* malformed escape */ }
-      if (!isT3ThreadId(threadId)) return Response.json({ error: "Not a T3 thread id" }, { status: 404 });
-      try {
-        await t3ThreadAction(threadId, t3Action[2] as "settle" | "unsettle" | "visit");
-        return Response.json({ ok: true });
-      } catch (err) {
-        return Response.json({ error: `T3 refused: ${t3Reason(err)}` }, { status: 502 });
-      }
-    }
-    const t3Match = url.pathname.match(/^\/t3\/([^/?#]{8,1600})\/?$/);
-    if (t3Match && req.method === "GET") {
-      let threadId = "";
-      try { threadId = decodeURIComponent(t3Match[1]); } catch { /* malformed escape */ }
-      if (!isT3ThreadId(threadId)) return new Response("Not a T3 thread id", { status: 404 });
-      const sess = ensureT3Session(threadId);
-      scheduleTranscriptDispose(sess);
-      return new Response(null, { status: 302, headers: { location: `${prefixedPath(`/s/${sess.id}`)}${url.search}` } });
-    }
-    const terminalMatch = url.pathname.match(/^\/terminal\/([0-9A-Fa-f-]{8,64})\/?$/);
-    if (terminalMatch && req.method === "GET") {
-      const source = resolveSurfaceTranscript(terminalMatch[1]);
-      if (!source) return transcriptNotFoundPage();
-      const sess = ensureTranscriptSession(source);
-      scheduleTranscriptDispose(sess);
-      return new Response(null, { status: 302, headers: { location: `${prefixedPath(`/s/${sess.id}`)}${url.search}` } });
-    }
-    if (url.pathname === "/api/sessions" && req.method === "GET") {
-      return Response.json([...sessions.values()].sort((a, b) => b.createdAt - a.createdAt).map(sessionListSummary));
-    }
-    return new Response(renderPage(url), { headers: { "content-type": "text/html; charset=utf-8" } });
-    },
-    websocket: {
-      open(ws) {
-      allSockets.add(ws);
-      ws.send(JSON.stringify({
-        kind: "hello",
-        providers: PROVIDERS.map(providerInfo),
-        harnessCatalogs,
-        harnesses: [
-          ...harnessRecommendations(),
-          ...discoverHarnesses({ cwd: process.env.CMUX_AGENT_UI_CWD ?? DEFAULT_CWD }),
-        ],
-        capabilities: capabilitiesMap(),
-        defaultCwd: process.env.CMUX_AGENT_UI_CWD ?? DEFAULT_CWD,
-        keys: keyConfig,
-      }));
-      ws.send(JSON.stringify({
-        kind: "sessions",
-        // Queued message bodies go only to the session's own page.
-    sessions: [...sessions.values()].sort((a, b) => b.createdAt - a.createdAt).map((s) => {
-      const { queuedMessages: _queued, ...summary } = sessionSummary(s) as ReturnType<typeof sessionSummary> & { queuedMessages?: unknown };
-      return summary;
-    }),
-      }));
-      },
-      close(ws) {
-      allSockets.delete(ws);
-      const sid = ws.data.subscribed;
-      const sess = sid ? sessions.get(sid) : undefined;
-      if (sess) {
-        sess.sockets.delete(ws);
-        scheduleTranscriptDispose(sess);
-      }
-      },
-      message(ws, raw) {
-      let msg: any;
-      try {
-        msg = JSON.parse(String(raw));
-      } catch {
-        return;
-      }
-      try {
-        handleSessionMessage(ws, msg);
-      } catch (err) {
-        sendWsError(ws, String(msg.op ?? ""), err);
-      }
-      },
-    },
+    fetch: (req, srv) => handleFetch(req, srv, localListener),
+    websocket: websocketHandlers,
   });
+  startRemoteServer();
 
   // Warm the bundle so the first page load doesn't pay the build cost, and so
   // a build error surfaces at startup rather than as a blank page.
@@ -2550,6 +2645,7 @@ function safeErrorMessage(op: string, err: unknown, context: { provider?: string
   if (op === "respond") return `Couldn't answer in T3: ${t3Reason(err)}`;
   if (op === "t3-launch") return `Couldn't start the chat in T3: ${t3Reason(err)}`;
   if (op === "t3-projects") return `Couldn't read T3's projects: ${t3Reason(err)}`;
+  if (op === "t3-threads") return `Couldn't read T3's threads: ${t3Reason(err)}`;
   return `Request failed: ${reason}`;
 }
 
@@ -2738,6 +2834,15 @@ export function handleSessionMessage(ws: Bun.ServerWebSocket<WsData>, msg: any) 
       t3ModelCatalog()
         .then((providers) => ws.send(JSON.stringify({ kind: "t3-models", providers })))
         .catch((err) => ws.send(JSON.stringify({ kind: "t3-models", providers: [], error: safeErrorMessage("t3-models", err) })));
+      break;
+    }
+    // The phone's home page: open threads, re-read while it's on screen.
+    case "t3-threads": {
+      try {
+        ws.send(JSON.stringify({ kind: "t3-threads", threads: t3OpenThreads() }));
+      } catch (err) {
+        ws.send(JSON.stringify({ kind: "t3-threads", threads: [], error: safeErrorMessage("t3-threads", err) }));
+      }
       break;
     }
     case "t3-projects": {

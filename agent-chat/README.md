@@ -64,6 +64,27 @@ Clicking any image or a page's expand button opens it full size; Esc or a click 
 
 A page is agent-written HTML, so it never runs with the sidecar's origin. The frame is sandboxed without `allow-same-origin`, and its document comes from a `blob:` URL rather than the sidecar URL, because a page can read its own address and the sidecar's contains the access token. Opened directly, the page response carries a CSP `sandbox` header for the same reason.
 
+## Phone access
+
+The same chats on an iPhone or any phone, over [Tailscale](https://tailscale.com). Nothing runs on the phone except Safari: the Mac does the work and the page streams it.
+
+```
+iPhone Safari ──https──▶ Tailscale ──▶ tailscale serve on the Mac ──▶ 127.0.0.1:7740 (this sidecar)
+                                                                        │ same sessions as cmux
+                                                                        ▼
+                                                              T3 Code server, agents
+```
+
+- **Turn it on** by adding `--remote` to the sidecar's command, for example `"agentChat": { "startCommand": "/opt/homebrew/bin/bun /path/to/agent-chat/server.ts --remote" }`. The sidecar then also listens on `127.0.0.1:7740` (`--remote-port` or `CMUX_AGENT_CHAT_REMOTE_PORT` changes it). cmux's own listener is unchanged.
+- **Publish it to your tailnet** once with `tailscale serve --bg 7740`. That gives the Mac an `https://<mac>.<tailnet>.ts.net` address only your own devices can reach, with a real certificate. Use `serve`, never `funnel`, which would put it on the public internet.
+- **Get the link** with `bun remote.ts` (`--copy` puts it on the clipboard, which Universal Clipboard hands to the iPhone). Open it in Safari, then Share → Add to Home Screen for a full-screen app.
+- **The link is the key.** The phone listener has its own 256-bit token, kept in `~/.config/cmux/agent-chat-remote.json` (mode 0600) so a home-screen bookmark survives restarts. Every route but `/healthz` is under `/<token>/`. Delete the file and restart the sidecar to revoke every phone.
+- **Who it accepts:** Host must be loopback, a `*.ts.net` name, or one listed in `CMUX_AGENT_CHAT_REMOTE_HOSTS`; a browser request's Origin must be the page's own https address. The cmux token and the phone token each work only on their own listener.
+
+On the phone, `/home` lists the open T3 threads by project, the way Agent Home does (`adapters/t3-threads.ts` reads T3's database with the same rules), marked Needs you, Working or New, and re-reads them every 5 s while the page is on screen. A thread opens as its chat; New chat starts a T3 thread. Opening a thread on the phone marks it read in T3. Chats get a "‹ Threads" link back, and the page keeps clear of the notch and home indicator.
+
+The Mac has to be awake with the sidecar running. cmux starts the sidecar the first time a chat opens, so after the Mac restarts, open any chat in cmux once.
+
 ## Architecture
 
 The frontend is a small React app built with Bun and styled to match the
