@@ -96,7 +96,7 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - `AgentHomeProjection` (task status, filters, ⌘1–9 order, totals)
   - `AgentActivityDescriber` (the "doing now" line)
   - `T3CodeStateReader` (read-only SQLite)
-  - `T3ThreadGrouping`
+  - `T3ThreadGrouping` (removed 2026-10-21; nothing used it)
   - 25 tests, all passing
 - **First run on the owner's T3 data (2026-10-19):** 1,891 active threads became 32 tasks, with 1,727 left unsorted. 1,707 of those are on a default branch and 20 have no project. The sorting flow in phase 6 is what clears that backlog.
 - **Phase 0, toolchain: done (2026-10-20).** Upstream builds under Xcode 27.1 even though it pins 26. The package is wired into `cmux.xcodeproj` and passes `swift test` (26 tests).
@@ -130,7 +130,7 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - A sidebar row opens the user's GitHub pull requests in the main area:
     - **To review:** `review-requested:@me`, split into new and "asked again after your review".
     - **Yours:** `author:@me`, split into "Needs you" (conflicts, failing checks, changes requested, ready to merge) and "Waiting".
-  - Data comes from one `gh api graphql` call, every 2 minutes or on ⌘R, with one retry because GitHub search sometimes returns 502.
+  - Data comes from one `gh api graphql` call, every 2 minutes while Agent Home is on screen and cmux is the active app, or on ⌘R, with one retry because GitHub search sometimes returns 502.
   - Rows show:
     - **Status:** CI, review state, draft and conflicts.
     - **Activity:** comments, size, author, and when it was last updated.
@@ -143,7 +143,7 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
   - New chat now lists every T3 project, not only those with open work.
 - **Provider usage (2026-10-20):**
   - A *Usage* sidebar row opens a Usage page in the main area. The row's meter shows the window closest to running out, with an icon when it's low.
-  - Data comes from the sidecar's `GET /api/t3/usage`, read every minute while Agent Home is open:
+  - Data comes from the sidecar's `GET /api/t3/usage`, read every minute while Agent Home is on screen and cmux is active. Background reads try the sidecar where it's configured to listen and never start it; opening the Usage page or a chat does:
     - **Limits:** T3's `server.getConfig` providers (`usageLimits`), readable with the orchestration token.
     - **Spend:** T3's `server.getUsageSummary`. This needs the `diagnostics:read` scope. Without it, the page shows a card with the command that replaces the Keychain token, and the sidecar signs in again once the token changes.
   - **Limits section:** one card per signed-in account (email, plan, spend this period). Each window shows a bar of what's left, a tick where even spending would be, pace (ahead, on, under), the time to reset, and a Low or Almost out status. When there are several accounts of one kind, the one with the most room in its tightest window is marked *Most room*.
@@ -160,7 +160,7 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
 - **New chat opens as a pane (2026-10-20):**
   - New chat, and "Review with agent", open a task workspace whose chat pane is a composer (`<sidecar>/t3/new?project=…&text=…`), in place of the old sheet.
   - The composer row has the project, T3's model, reasoning and fast mode (the same controls as a T3 chat), access (Full access, Auto, Accept edits, Ask first) and a Plan mode toggle. Each one starts at the project's default, or else at its latest thread's settings. When a project has neither, the model falls back to T3's default model.
-  - Start sends `t3-launch` over the page's socket. The sidecar launches the thread and the page becomes that thread's chat (`/s/t3-…`). cmux watches the pane's URL for that change (`T3Linking.threadId(fromChatURL:)`). It then links the workspace to the thread, names it, files it under the thread's project and opens a terminal on the right.
+  - Start sends `t3-launch` over the page's socket. The sidecar launches the thread and the page becomes that thread's chat (`/s/t3-…`). cmux watches the pane's URL for that change (`T3ChatLinks.threadId(fromChatURL:)`). It then links the workspace to the thread, names it, files it under the thread's project and opens a terminal on the right.
   - Verified against a sidecar on a spare port: prefill, project switching (the model followed the project), and a live launch in T3's scratch project with "Ask first". T3 recorded `approval-required`, the chosen model and effort, and the page turned into the live chat. The throwaway thread was settled afterwards.
 - **Handoffs, links and linked pull requests (2026-10-20):**
   - **Handoffs group under the thread that started them.** An agent that hands work off starts a new top-level thread with `t3_thread_launch` or `create_threads`. T3 records no parent for it; the only record is the launching thread's tool call, whose result names the new thread.
@@ -188,8 +188,15 @@ Sync with `git fetch upstream && git merge upstream/main` on `main`, then merge 
     - **Code:** unified diffs, review threads at their lines, and Viewed checkboxes kept locally.
   - A composer comments, approves or requests changes.
   - Data comes from one `gh api graphql` query plus the REST files list. Bodies render GitHub's `bodyHTML` in small self-sizing web views. The GitHub page is still one menu item away (Open on GitHub), and it opens in the pull request's cmux workspace.
+- **Performance pass (2026-10-21):**
+  - **Polling:** the T3, pull request, usage, session-file and git pollers run only while a view showing their data is on screen, and pause while cmux isn't the active app. Coming back refreshes once a full interval has passed since the last run.
+  - **T3 reads:** one read at a time, on one connection, skipped when nothing changed. A read that started before a verify, undo or visit is discarded and redone, so a verified task doesn't flash back.
+  - **Feed:** the per-terminal fold (activity line, plan, files written) moved into the package as `AgentHomeFeedFold`, parses each tool input once, and is cached until the Feed changes. The sidebar re-renders on a workspace's settled title, group, folder and agent-state changes, at most every 100 ms.
+  - **`gh`:** every call goes through `GitHubCLI` on cmux's `CommandRunner`, with a 45 s timeout. A merge or comment that times out says it may have gone through.
+  - **Rendering:** PR diffs are parsed and hashed once per load; task status and sub-thread lookups are computed once per read; motion runs on one 6 fps clock that pauses when the window isn't key and honours Reduce Motion; page switches no longer animate the terminal area.
+  - **T3 chats (agent-chat):** the sidecar mirrors each thread from T3's stream with T3's own projection reducer instead of re-reading the thread on every event. History goes out in one message, consecutive text is stored as one event, and the page folds events once per frame. T3 restarts reconnect with backoff (1–30 s) and show as a connection state, not a transcript error.
 - **Phase 6, T3 Code integration: first version running (2026-10-20).**
-  - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only every 60 s, off the main thread, and groups threads into tasks.
+  - `AgentHomeT3Model` reads `~/.t3/userdata/statev2.sqlite` read-only, off the main thread, and groups threads into tasks. Since 2026-10-21 it polls every 3 s while Agent Home is on screen and cmux is active, and skips the read when the database and its WAL haven't changed (at most 60 s between reads).
   - Each T3 project is matched to a cmux project by: the group's `externalID` (`t3:<project id>`), then the anchor workspace's folder versus T3's `workspace_root`, then the name.
   - Unopened T3 tasks appear dimmed under their project, tagged "T3" with a thread count, three at a time plus "N more from T3". T3 projects with no cmux project are listed under "From T3 Code". Leftover threads show as one "Unsorted T3 threads" count.
   - Clicking a T3 task creates the project if it's missing (tagged with the `t3:` external id), opens a workspace in the task's worktree or the project root, files it under the project, selects it, and records the link in UserDefaults (`agentHomeT3TaskLinks`).
