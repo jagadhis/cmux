@@ -24,6 +24,9 @@ Read the matching skill before changing an area, then only the references needed
   (`/Applications/cmux.app`, `com.cmuxterm.app`), including through a Release build or
   another bundle with that ID. Never set `CMUX_ALLOW_REPLACING_RUNNING_CMUX`; only the
   user may. Reproduce in a tagged build and attach profiling to its PID.
+- Stop a manual `agent-chat` dev server by its PID, or with
+  `pkill -U "$(id -u)" -f '(^bun |agent-chat/)server\.ts'`. macOS `pkill` reads words after the pattern as
+  more patterns, so `pkill -f "bun server.ts" -U $(id -u)` also kills unrelated processes.
 - Dogfood through `CMUX_TAG=<tag> scripts/cmux-debug-cli.sh`, never `/tmp/cmux-cli`.
   Never report raw `.app` paths or `file://` URLs.
 - App-linked code (`Sources/`, `CLI/`, `TunnelExtension/` and their packages) must
