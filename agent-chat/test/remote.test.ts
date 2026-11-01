@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { handleRemoteFetchForTest } from "../server";
 import { loadOrCreateRemoteToken, phoneUrl, remoteConfig, remoteHostTrusted, remoteOriginTrusted } from "../remote";
 import { readOpenT3Threads, threadState } from "../adapters/t3-threads";
-import { ago, groupThreads, type HomeThread } from "../src/components/Home";
+import { ago, groupTasks, homeSections, nextWaiting, t3ThreadIdFromSessionId, type HomeThread } from "../src/t3Threads";
 
 const TOKEN = "a".repeat(43);
 const HOST = "my-mac.tail1234.ts.net";
@@ -126,14 +126,14 @@ function fixtureDb(): Database {
     CREATE TABLE projection_projects (project_id TEXT, title TEXT, workspace_root TEXT, deleted_at TEXT);
     CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, project_id TEXT, title TEXT, updated_at TEXT, payload_json TEXT, archived_at TEXT, deleted_at TEXT);
     CREATE TABLE orchestration_v2_projection_runs (thread_id TEXT, ordinal INTEGER, status TEXT, completed_at TEXT);
-    CREATE TABLE orchestration_v2_projection_runtime_requests (thread_id TEXT, status TEXT);
+    CREATE TABLE orchestration_v2_projection_runtime_requests (thread_id TEXT, status TEXT, kind TEXT, created_at TEXT);
     INSERT INTO projection_projects VALUES ('p1', 'cmux', '/x', NULL);
   `);
   const thread = db.query("INSERT INTO orchestration_v2_projection_threads VALUES (?, 'p1', ?, ?, ?, NULL, NULL)");
   const run = db.query("INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?, ?)");
   thread.run("asks", "Asks a question", "2026-10-21T10:05:00Z", "{}");
   run.run("asks", 1, "waiting", null);
-  db.query("INSERT INTO orchestration_v2_projection_runtime_requests VALUES ('asks', 'pending')").run();
+  db.query("INSERT INTO orchestration_v2_projection_runtime_requests VALUES ('asks', 'pending', 'user_input', '2026-10-21T10:05:00Z')").run();
   thread.run("works", "Working", "2026-10-21T10:04:00Z", JSON.stringify({ branch: "feat/x" }));
   run.run("works", 1, "completed", "2026-10-21T09:00:00Z");
   run.run("works", 2, "running", null);
@@ -160,6 +160,8 @@ describe("open T3 threads", () => {
     expect(threads.find((t) => t.id === "child")?.rootThreadId).toBe("works");
     expect(threads.find((t) => t.id === "works")?.branch).toBe("feat/x");
     expect(threads[0].projectName).toBe("cmux");
+    expect(threads[0].waitingFor).toBe("Asked you a question");
+    expect(threads.find((t) => t.id === "works")?.waitingFor).toBeNull();
   });
 
   test("a settled task still shows while it works or asks", () => {
@@ -184,17 +186,59 @@ describe("home page grouping", () => {
   });
 
   test("sub-threads sit under their task, which takes their most urgent state", () => {
-    const projects = groupThreads([t("child", "needs-input", "root"), t("root", "idle"), t("other", "running", null, "p2")]);
-    expect(projects.map((p) => p.id)).toEqual(["p1", "p2"]);
-    expect(projects[0].tasks).toHaveLength(1);
-    expect(projects[0].tasks[0].root.id).toBe("root");
-    expect(projects[0].tasks[0].children.map((c) => c.id)).toEqual(["child"]);
-    expect(projects[0].tasks[0].state).toBe("needs-input");
+    const tasks = groupTasks([t("child", "needs-input", "root"), t("root", "idle"), t("other", "running", null, "p2")]);
+    expect(tasks.map((task) => task.root.id)).toEqual(["root", "other"]);
+    expect(tasks[0].children.map((c) => c.id)).toEqual(["child"]);
+    expect(tasks[0].state).toBe("needs-input");
   });
 
   test("a sub-thread whose task isn't listed stands on its own", () => {
-    const projects = groupThreads([t("orphan", "idle", "gone")]);
-    expect(projects[0].tasks[0].root.id).toBe("orphan");
+    const tasks = groupTasks([t("orphan", "idle", "gone")]);
+    expect(tasks[0].root.id).toBe("orphan");
+  });
+
+  test("tasks that need you come first, whatever changed last", () => {
+    const sections = homeSections([
+      t("quiet", "idle"),
+      t("done", "unread"),
+      t("busy", "running"),
+      t("asks", "needs-input"),
+      t("asks-child", "needs-input", "quiet-root"),
+      t("quiet-root", "idle"),
+    ]);
+    expect(sections.map((s) => [s.state, s.tasks.map((task) => task.root.id)])).toEqual([
+      ["needs-input", ["asks", "quiet-root"]],
+      ["running", ["busy"]],
+      ["unread", ["done"]],
+      ["idle", ["quiet"]],
+    ]);
+  });
+
+  test("search keeps tasks with any matching thread, by title, project or branch", () => {
+    const threads = [
+      t("root", "idle"),
+      { ...t("child", "idle", "root"), title: "Fix the Nebula build" },
+      { ...t("other", "idle"), branch: "feat/phone" },
+    ];
+    expect(homeSections(threads, "nebula")[0].tasks.map((task) => task.root.id)).toEqual(["root"]);
+    expect(homeSections(threads, "FEAT/PHONE")[0].tasks.map((task) => task.root.id)).toEqual(["other"]);
+    expect(homeSections(threads, "nothing")).toEqual([]);
+  });
+
+  test("the next thread that needs you, after this one, wrapping around", () => {
+    const threads = [t("a", "needs-input"), t("b", "running"), t("c", "needs-input")];
+    expect(nextWaiting(threads, "a")?.id).toBe("c");
+    expect(nextWaiting(threads, "c")?.id).toBe("a");
+    expect(nextWaiting(threads, "b")?.id).toBe("a");
+    expect(nextWaiting([t("a", "needs-input")], "a")).toBeNull();
+    expect(nextWaiting([t("b", "idle")], "b")).toBeNull();
+  });
+
+  test("a chat's session id names its T3 thread", () => {
+    const id = "thread:project:0a29c151:c1374e5d";
+    expect(t3ThreadIdFromSessionId(`t3-${Buffer.from(id).toString("base64url")}`)).toBe(id);
+    expect(t3ThreadIdFromSessionId("abc")).toBeNull();
+    expect(t3ThreadIdFromSessionId(null)).toBeNull();
   });
 
   test("relative times", () => {

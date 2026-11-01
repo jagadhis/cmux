@@ -370,6 +370,8 @@ export function appPath(path: string): string {
 const routedSessionId = (routePath().match(/^\/s\/([\w-]+)/) || [])[1] || null;
 /** Opened through phone access (remote.ts) rather than inside cmux. */
 export const onPhone = typeof window !== "undefined" && window.__AGENT_CHAT_REMOTE__ === true;
+/** Phone access on a touch screen, where the return key makes a new line and a button sends. */
+export const touchComposer = onPhone && typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 /** The phone's home page: open T3 threads and New chat. */
 export const routedToHome = /^\/home\/?$/.test(routePath());
 /** cmux Agent Home's New chat pane: a composer that starts a T3 thread. */

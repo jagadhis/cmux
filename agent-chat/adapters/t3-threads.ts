@@ -6,6 +6,7 @@
 // lists it. Read straight from T3's database, read-only.
 
 import type { Database } from "bun:sqlite";
+import { requestTitle } from "./t3-timeline";
 
 /** What the home page shows for a thread, most urgent first. */
 export type T3ThreadState = "needs-input" | "running" | "unread" | "idle";
@@ -18,6 +19,8 @@ export interface T3ThreadSummary {
   /** The task's first thread; null when this thread is one. */
   rootThreadId: string | null;
   state: T3ThreadState;
+  /** What the thread waits on you for ("Asked you a question"), while it needs input. */
+  waitingFor: string | null;
   branch: string | null;
   /** ISO time of the last change. */
   updatedAt: string;
@@ -47,6 +50,7 @@ interface Row {
   run_status: string | null;
   run_completed_at: string | null;
   pending: number;
+  pending_kind: string | null;
   subagent_status: string | null;
 }
 
@@ -62,6 +66,9 @@ function threadSql(db: Database): string {
            lr.status AS run_status, lr.completed_at AS run_completed_at,
            (SELECT count(*) FROM orchestration_v2_projection_runtime_requests q
              WHERE q.thread_id = t.thread_id AND q.status = 'pending') AS pending,
+           (SELECT q.kind FROM orchestration_v2_projection_runtime_requests q
+             WHERE q.thread_id = t.thread_id AND q.status = 'pending'
+             ORDER BY q.created_at DESC LIMIT 1) AS pending_kind,
            sa.status AS subagent_status
     FROM orchestration_v2_projection_threads t
     LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
@@ -119,19 +126,21 @@ export function readOpenT3Threads(db: Database, limit = 300): T3ThreadSummary[] 
     const rootThreadId = typeof payload.lineage?.rootThreadId === "string" && payload.lineage.rootThreadId !== row.thread_id
       ? payload.lineage.rootThreadId
       : null;
+    const state = threadState({
+      pending: row.pending,
+      runStatus: row.run_status,
+      subagentStatus: row.subagent_status,
+      runCompletedAt: row.run_completed_at,
+      lastVisitedAt: typeof payload.lastVisitedAt === "string" ? payload.lastVisitedAt : null,
+    });
     return {
       id: row.thread_id,
       title: row.title ?? "",
       projectId: row.project_id ?? "",
       projectName: row.project_title ?? "",
       rootThreadId,
-      state: threadState({
-        pending: row.pending,
-        runStatus: row.run_status,
-        subagentStatus: row.subagent_status,
-        runCompletedAt: row.run_completed_at,
-        lastVisitedAt: typeof payload.lastVisitedAt === "string" ? payload.lastVisitedAt : null,
-      }),
+      state,
+      waitingFor: state === "needs-input" ? requestTitle(row.pending_kind ?? "") : null,
       branch: typeof payload.branch === "string" ? payload.branch : null,
       updatedAt: row.updated_at ?? "",
     };

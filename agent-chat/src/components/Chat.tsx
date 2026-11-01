@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useCtx } from "../context";
 import { agentChatText } from "../i18n";
 import { readStoredProviderOptions, persistOptionsSnapshot, updateStoredProviderOption } from "../options-store";
-import { composerDraftKey, routedToTranscript, transcriptComposerLocked, type OptionValue, type SessionOption } from "../session";
+import { composerDraftKey, onPhone, routedToTranscript, touchComposer, transcriptComposerLocked, type OptionValue, type SessionOption } from "../session";
 import { ArrowUp } from "./icons";
 import { T3ModelControls, T3QuestionCard, useT3Questions } from "./T3Controls";
 import { isCtrlJ, insertNewlineAtCaret, useCommandMenu } from "./CommandMenu";
@@ -17,6 +17,8 @@ import { loadingProviderOptionIds, providerOptionMap, useFileCatalog, useProvide
 // cmux Agent Home: copy for chats of T3 Code threads (English only in this fork).
 const T3_TEXT = {
   running: "Working · Esc to stop",
+  runningPhone: "Working",
+  latest: "Jump to latest",
   idle: "Synced with T3",
   connecting: "Connecting to T3…",
   disconnected: "Not connected to T3",
@@ -93,6 +95,8 @@ export function Chat() {
   const taRef = useAutoGrow(text, 200);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  // Phone access: a button back to the latest message once scrolled away from it.
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const pendingModelRestoreRef = useRef<string | null>(null);
   const cwd = session?.cwd ?? "";
   const commandGroups = useMemo(() => withFileTrigger(commands, filesByCwd[cwd] ?? []), [commands, cwd, filesByCwd]);
@@ -143,7 +147,16 @@ export function Chat() {
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (onPhone && awayFromBottom === stickRef.current) setAwayFromBottom(!stickRef.current);
+  };
+  const jumpToLatest = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    setAwayFromBottom(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
   const submit = () => {
     if (composerLocked) {
@@ -211,6 +224,9 @@ export function Chat() {
         />
       </div>
       <div id="chat-input-row">
+        {onPhone && awayFromBottom ? (
+          <button type="button" className="jump-latest" aria-label={T3_TEXT.latest} onClick={jumpToLatest}>↓</button>
+        ) : null}
         {routing?.phase === "handoff" ? (
           <div className="routing-notice" role="status">{agentChatText("continuedNewChat")}</div>
         ) : routing?.phase === "rerouted" ? (
@@ -266,6 +282,8 @@ export function Chat() {
               ref={taRef}
               id="chat-input"
               data-primary-textarea="true"
+              // One line to start on a phone, so the reply above keeps the screen.
+              rows={onPhone ? 1 : undefined}
               placeholder={composerLocked
                 ? "Answer in terminal…"
                 : question.active
@@ -281,7 +299,8 @@ export function Chat() {
               onKeyDown={(e) => {
                 if (commandMenu.onKeyDown(e)) return;
                 if (isCtrlJ(e)) { e.preventDefault(); insertNewlineAtCaret(text, setText, taRef); return; }
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+                // A phone keyboard's return key makes a new line; the send button sends.
+                if (e.key === "Enter" && !e.shiftKey && !touchComposer) { e.preventDefault(); submit(); }
               }}
             />
             {commandMenu.menu}
@@ -301,7 +320,7 @@ export function Chat() {
               <span className="transcript-hint">
                 <span className={running ? "transcript-dot running" : "transcript-dot"} aria-hidden="true" />
                 <span>{isT3
-                  ? (session?.t3Connection ? T3_TEXT.disconnected : !session?.t3Synced ? T3_TEXT.connecting : running ? T3_TEXT.running : T3_TEXT.idle)
+                  ? (session?.t3Connection ? T3_TEXT.disconnected : !session?.t3Synced ? T3_TEXT.connecting : running ? (onPhone ? T3_TEXT.runningPhone : T3_TEXT.running) : T3_TEXT.idle)
                   : agentChatText(running ? "transcriptViewRunning" : "transcriptViewIdle")}</span>
               </span>
               {chatActions}

@@ -1236,43 +1236,164 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 .phone #main { padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
 /* iOS zooms into any field under 16px when it's focused. */
 .phone textarea, .phone input { font-size: 16px !important; }
-.phone #composer-view { justify-content: flex-start; padding: 12px; }
-.phone #chat-input-row { padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
-.phone-bar { flex: none; display: flex; align-items: center; padding: 10px 14px 6px; }
-.phone-bar a { color: var(--accent); text-decoration: none; font-size: calc(var(--font-size-base) + 1px); }
+.phone a, .phone button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+/* Replies, code and tool output can be selected and copied with a long press. */
+.phone #messages .selectable, .phone #messages .selectable * { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 
+/* The bar above a chat: back, title and state, Next and Done. */
+.phone-bar {
+  flex: none; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.phone-back {
+  flex: none; display: inline-flex; align-items: center; gap: 2px; min-height: 40px; padding: 0 6px 0 2px;
+  color: var(--accent); text-decoration: none; font-size: calc(var(--font-size-base) + 1px);
+}
+.phone-back-chevron { font-size: 28px; line-height: 1; margin-top: -3px; }
+.phone-badge {
+  min-width: 20px; height: 20px; padding: 0 6px; margin-left: 4px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--amber); color: var(--bg); font-size: 12px; font-weight: 700;
+}
+.phone-title { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.phone-title-text { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-status { display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); font-size: calc(var(--font-size-base) - 2px); }
+.phone-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.phone-status-needs-input { color: var(--amber-text); }
+.phone-status-needs-input .phone-status-dot { background: var(--amber); }
+.phone-status-running { color: var(--accent); }
+.phone-status-running .phone-status-dot { background: var(--accent); animation: home-pulse 1.4s ease-in-out infinite; }
+.phone-status-offline { color: var(--red-text); }
+.phone-status-offline .phone-status-dot { background: var(--red); }
+.phone-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.phone-action {
+  display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 12px; border: 0; border-radius: 999px;
+  background: var(--bg-input); color: var(--text); text-decoration: none; font: 600 calc(var(--font-size-base) - 1px) var(--font-sans);
+}
+.phone-action svg { width: 14px; height: 14px; }
+.phone-action:active { background: var(--bg-hover); }
+.phone-done { background: color-mix(in srgb, var(--green) 20%, var(--bg-input)); color: var(--green-text); }
+.phone-action:disabled { opacity: .4; }
+@media (max-width: 380px) { .phone-back-text { display: none; } }
+
+/* Chat: the composer and the cards for what the agent waits on, sized for a thumb. */
+.phone #chat-input-row { padding: 6px 10px max(10px, env(safe-area-inset-bottom)); }
+.phone #chat-input { min-height: 44px; }
+.phone .transcript-hint > span:last-child { display: none; }
+.phone .send { width: 40px; height: 40px; }
+.phone #stop-btn { height: 36px; padding: 0 14px; border-radius: 999px; }
+.jump-latest {
+  position: absolute; right: 16px; bottom: calc(100% + 10px); z-index: 4;
+  width: 40px; height: 40px; border: 0; border-radius: 50%;
+  background: var(--bg-input); color: var(--text); font-size: 18px;
+  box-shadow: 0 6px 18px var(--shadow);
+}
+/* The cards sit in the flow above the composer, so the reply above stays readable. */
+.phone .t3-request, .phone .t3-question {
+  position: static; margin: 0 0 8px; max-height: 55vh; overflow-y: auto; font-size: var(--font-size-base);
+}
+.phone .t3-request-detail { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow-y: auto; }
+.phone .t3-request-actions { flex-wrap: wrap; }
+.phone .t3-request-btn { flex: 1 1 0; min-width: 96px; height: 44px; font-size: var(--font-size-base); border-radius: 10px; }
+.phone .t3-question-options { gap: 6px; }
+.phone .t3-question-option { min-height: 48px; padding: 10px 12px; background: color-mix(in srgb, var(--text) 7%, transparent); border-radius: 10px; }
+.phone .t3-question-option-label { font-size: var(--font-size-base); }
+.phone .t3-question-option kbd { display: none; }
+.phone .t3-question-skip { padding: 8px 10px; }
+.phone .terminal-attention { position: static; margin: 0 0 8px; }
+
+/* New chat: the project spelled out on top, the controls wrapping under the prompt. */
+.phone #composer-view { justify-content: flex-start; padding: 12px; gap: 10px; }
+.phone #composer-card { width: 100%; }
+.phone #prompt-input { min-height: 120px; }
+.phone #composer-view .status-row { flex-wrap: wrap; row-gap: 6px; }
+.phone #composer-view .status-row .row-control { height: 34px; padding: 0 8px; }
+.phone #composer-view .status-row .row-icon-only { width: 34px; }
+.phone #composer-view .status-row-spacer { display: none; }
+.phone #composer-view .send { flex: 1 0 100%; height: 46px; margin-top: 4px; border-radius: 12px; gap: 6px; font: 650 var(--font-size-base) var(--font-sans); }
+.phone-project {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; padding: 8px 14px;
+  border: 0; border-radius: 14px; background: var(--bg-input); color: var(--text); text-align: left; font: inherit;
+}
+.phone-project > svg { width: 18px; height: 18px; flex: none; color: var(--text-dim); }
+.phone-project-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.phone-project-label { color: var(--text-faint); font-size: calc(var(--font-size-base) - 2px); }
+.phone-project-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-project .chev { color: var(--text-faint); }
+/* Menus take the phone's width, with rows a thumb can hit. */
+.phone .t3-project-menu, .phone .t3-model-menu, .phone .option-menu { width: calc(100vw - 24px); max-width: 520px; }
+.phone .cmdk-item { min-height: 44px; }
+
+/* Home: what needs you first, a search, New chat at thumb reach. */
 .home {
   height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: calc(env(safe-area-inset-top) + 12px) max(16px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 24px) max(16px, env(safe-area-inset-left));
+  padding: 0 max(14px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 96px) max(14px, env(safe-area-inset-left));
   max-width: 760px; margin: 0 auto;
 }
-.home-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 10px; }
-.home-header h1 { margin: 0; font-size: calc(var(--font-size-base) + 12px); font-weight: 650; letter-spacing: -.01em; }
-.home-new {
-  background: var(--accent); color: var(--on-accent, var(--bg)); text-decoration: none;
-  border-radius: 999px; padding: 7px 16px; font-weight: 600;
+.home-header {
+  position: sticky; top: 0; z-index: 5; margin: 0 -4px; padding: calc(env(safe-area-inset-top) + 10px) 4px 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
 }
-.home-summary { display: flex; gap: 8px; padding-bottom: 6px; }
+.home-title-row { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; }
+.home-title-row h1 { margin: 0; font-size: calc(var(--font-size-base) + 12px); font-weight: 650; letter-spacing: -.01em; }
+.home-header-spacer { flex: 1; }
+.home-conn { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.home-conn.on { background: var(--green); }
+.home-search {
+  width: 100%; height: 40px; padding: 0 14px; border: 0; border-radius: 12px; outline: none;
+  background: var(--bg-input); color: var(--text); -webkit-appearance: none; appearance: none;
+}
+.home-search::placeholder { color: var(--text-faint); }
 .home-note { color: var(--text-dim); margin: 18px 0; }
 .home-error { color: var(--red-text); }
-.home-project { margin-top: 18px; }
-.home-project h2 {
-  margin: 0 0 6px; font-size: calc(var(--font-size-base) - 2px); font-weight: 600;
-  color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em;
+.home-section { margin-top: 14px; }
+.home-section h2 {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 0 2px;
+  font-size: calc(var(--font-size-base) - 1px); font-weight: 650; color: var(--text-dim);
 }
-.home-task { background: var(--bg-raised); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
-.home-row {
-  display: flex; align-items: center; gap: 10px; padding: 12px 14px; min-height: 48px;
+.home-section-needs-input h2 { color: var(--amber-text); }
+.home-section-running h2 { color: var(--accent); }
+.home-section-unread h2 { color: var(--green-text); }
+.home-section-count {
+  min-width: 22px; height: 20px; padding: 0 7px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, currentColor 16%, transparent); font-size: 12px;
+}
+.home-task { background: var(--bg-raised); border-radius: 14px; margin-bottom: 8px; overflow: hidden; }
+.home-row { display: flex; align-items: stretch; }
+.home-row + .home-row, .home-row + .home-more { border-top: 1px solid var(--border); }
+.home-row-link {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 12px 10px 12px 14px; min-height: 56px;
   color: var(--text); text-decoration: none;
-  -webkit-tap-highlight-color: transparent;
 }
-.home-row:active { background: var(--bg-hover); }
-.home-row-child { padding: 8px 14px 8px 32px; min-height: 40px; border-top: 1px solid var(--border); }
+.home-row-link:active { background: var(--bg-hover); }
+.home-row-child .home-row-link { padding: 9px 10px 9px 32px; min-height: 48px; }
 .home-row-child .home-row-title { color: var(--text-dim); font-size: calc(var(--font-size-base) - 1px); }
-.home-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.home-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-row-meta { color: var(--text-faint); font-size: calc(var(--font-size-base) - 2px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
+.home-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.home-row-title { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; }
+.home-row-waiting { color: var(--amber-text); font-size: calc(var(--font-size-base) - 1px); font-weight: 600; }
+.home-row-meta {
+  display: flex; align-items: center; gap: 6px; color: var(--text-faint); font-size: calc(var(--font-size-base) - 2px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-row-state { font-weight: 600; }
+.home-row-state-needs-input { color: var(--amber-text); }
+.home-row-state-running { color: var(--accent); }
+.home-row-state-unread { color: var(--green-text); }
+.home-row-chevron { flex: none; color: var(--text-faint); font-size: 22px; line-height: 1; }
+.home-done {
+  flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 60px;
+  border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--green-text);
+  font: 600 11px var(--font-sans);
+}
+.home-done svg { width: 16px; height: 16px; }
+.home-done:active { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.home-more, .home-earlier {
+  display: block; width: 100%; min-height: 40px; border: 0; background: transparent; color: var(--accent);
+  font: 500 calc(var(--font-size-base) - 1px) var(--font-sans); text-align: left; padding: 0 14px 0 32px;
+}
+.home-earlier { padding: 0 2px; text-align: center; border-radius: 12px; background: var(--bg-raised); margin-bottom: 8px; }
+.home-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
 .home-dot-needs-input { background: var(--amber); opacity: 1; }
 .home-dot-running { background: var(--accent); opacity: 1; animation: home-pulse 1.4s ease-in-out infinite; }
 .home-dot-unread { background: var(--green); opacity: 1; }
@@ -1283,4 +1404,21 @@ details.thinking .t-body { white-space: pre-wrap; font-size: calc(var(--font-siz
 }
 .home-state-needs-input { background: color-mix(in srgb, var(--amber) 22%, transparent); color: var(--amber-text); }
 .home-state-running { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
-.home-state-unread { background: color-mix(in srgb, var(--green) 22%, transparent); color: var(--green-text); }
+.home-fab {
+  position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(env(safe-area-inset-bottom) + 18px); z-index: 6;
+  display: inline-flex; align-items: center; gap: 8px; height: 52px; padding: 0 22px 0 18px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent, var(--bg)); text-decoration: none; font-weight: 650;
+  box-shadow: 0 10px 28px var(--shadow);
+}
+.home-fab span { font-size: 24px; line-height: 1; margin-top: -2px; }
+.home-fab:active { transform: scale(.97); }
+.home-toast {
+  position: fixed; left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right));
+  bottom: calc(env(safe-area-inset-bottom) + 84px); z-index: 7; max-width: 520px; margin: 0 auto;
+  display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 14px;
+  background: var(--fg); color: var(--bg); box-shadow: 0 10px 28px var(--shadow);
+}
+.home-toast-error { background: var(--red); color: var(--fg); }
+.home-toast-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-toast button { flex: none; height: 34px; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: var(--accent); font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { .home-dot-running, .phone-status-running .phone-status-dot { animation: none; } }

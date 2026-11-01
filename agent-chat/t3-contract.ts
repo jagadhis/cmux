@@ -86,6 +86,8 @@ export interface T3Project {
   id: string;
   name: string;
   root: string;
+  /** When the project's latest thread last changed; null when it has none. */
+  lastActiveAt: string | null;
   defaults: T3LaunchDefaults;
 }
 

@@ -573,11 +573,16 @@ const REQUEST_TITLES: Record<string, string> = {
   auth_refresh: "Needs you to sign in again",
 };
 
+/** What a request of this kind asks of the user, in a few words. */
+export function requestTitle(kind: string): string {
+  return REQUEST_TITLES[kind] ?? "Needs your input";
+}
+
 function pendingRequest(projection: T3Projection): T3PendingRequest | null {
   const request = [...projection.runtimeRequests].reverse().find((r) => r.status === "pending");
   if (!request) return null;
   const capability = request.responseCapability?.type ?? "live";
-  const title = REQUEST_TITLES[request.kind] ?? "Needs your input";
+  const title = requestTitle(request.kind);
   const requestItem = [...projection.turnItems].reverse().find((i) => i.requestId === request.id);
 
   if (request.kind === "user_input") {

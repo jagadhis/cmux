@@ -491,7 +491,8 @@ const PROJECT_DEFAULTS_SQL = `
   SELECT p.project_id, p.title, p.workspace_root, p.default_model_selection_json,
     json_extract(t.payload_json, '$.modelSelection') AS thread_model_json,
     json_extract(t.payload_json, '$.runtimeMode') AS runtime_mode,
-    json_extract(t.payload_json, '$.interactionMode') AS interaction_mode
+    json_extract(t.payload_json, '$.interactionMode') AS interaction_mode,
+    t.updated_at AS last_active_at
   FROM projection_projects p
   LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id = (
     SELECT thread_id FROM orchestration_v2_projection_threads
@@ -505,6 +506,7 @@ interface ProjectDefaultsRow {
   thread_model_json: string | null;
   runtime_mode: string | null;
   interaction_mode: string | null;
+  last_active_at: string | null;
 }
 
 function launchDefaultsOf(row: ProjectDefaultsRow): T3LaunchDefaults {
@@ -523,6 +525,7 @@ export function t3Projects(): T3Project[] {
       id: row.project_id,
       name: row.title ?? "",
       root: row.workspace_root ?? "",
+      lastActiveAt: row.last_active_at,
       defaults: launchDefaultsOf(row),
     }));
   });

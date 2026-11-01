@@ -3,12 +3,13 @@
 // the project, access mode and plan mode T3 asks for when a thread starts.
 // Once T3 starts the thread, the page becomes that thread's chat.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { preferenceStorage } from "../browser-storage";
 import { useCtx } from "../context";
-import { onPhone, type T3FullSelection, type T3ModelProvider, type T3Project } from "../session";
+import { onPhone, touchComposer, type T3FullSelection, type T3ModelProvider, type T3Project } from "../session";
 import { CmdkMenu } from "./CmdkMenu";
 import { isCtrlJ, insertNewlineAtCaret } from "./CommandMenu";
-import { ArrowUp, FolderIcon, PinwheelSpinner, PlanIcon, ShieldIcon } from "./icons";
+import { ArrowUp, Chevron, FolderIcon, PinwheelSpinner, PlanIcon, ShieldIcon } from "./icons";
 import { fullSelection, T3ModelControls } from "./T3Controls";
 import { HintTooltip } from "./Tooltips";
 import { useAutoGrow } from "../hooks/useAutoGrow";
@@ -23,7 +24,19 @@ const T3_NEW_CHAT_TEXT = {
   start: "Start",
   hint: "Enter to start · Shift+Enter for newline · Runs in T3 and syncs both ways",
   connecting: "Connecting to cmux…",
+  recent: "Recent",
+  allProjects: "All projects",
 };
+
+/** Phone access: the project the last chat started in, picked again next time. */
+const LAST_PROJECT_KEY = "agentchat.t3.lastProject";
+const RECENT_PROJECTS = 4;
+
+/** Projects with the most recently active first; ones never used keep their order. */
+export function projectsByRecency(projects: T3Project[]): T3Project[] {
+  const at = (p: T3Project) => (p.lastActiveAt ? Date.parse(p.lastActiveAt) || 0 : 0);
+  return [...projects].sort((a, b) => at(b) - at(a));
+}
 
 const RUNTIME_MODES: { id: string; label: string; description: string }[] = [
   { id: "full-access", label: "Full access", description: "Runs commands and edits files without asking" },
@@ -69,7 +82,12 @@ export function T3NewChat() {
     history.replaceState(null, "", location.pathname + (query ? `?${query}` : ""));
   }, [params]);
 
-  const project: T3Project | undefined = t3Projects?.find((p) => p.id === projectId) ?? t3Projects?.[0];
+  // On the phone, a chat starts where the last one did, else in the busiest project.
+  const recent = useMemo(() => (onPhone && t3Projects ? projectsByRecency(t3Projects) : null), [t3Projects]);
+  const fallbackProject = onPhone
+    ? t3Projects?.find((p) => p.id === preferenceStorage.getItem(LAST_PROJECT_KEY)) ?? recent?.[0]
+    : t3Projects?.[0];
+  const project: T3Project | undefined = t3Projects?.find((p) => p.id === projectId) ?? fallbackProject;
   useEffect(() => {
     if (project && project.id !== projectId) setProjectId(project.id);
   }, [project, projectId]);
@@ -87,6 +105,7 @@ export function T3NewChat() {
   const submit = () => {
     const prompt = text.trim();
     if (!canStart || !project || !selection || !prompt) return;
+    if (onPhone) preferenceStorage.setItem(LAST_PROJECT_KEY, project.id);
     launchT3({
       projectId: project.id,
       text: prompt,
@@ -97,9 +116,48 @@ export function T3NewChat() {
   };
 
   const projectLabel = project?.name || (t3Projects ? T3_NEW_CHAT_TEXT.project : T3_NEW_CHAT_TEXT.loadingProjects);
+  const projectItem = (p: T3Project, group: string) => ({
+    id: `${group}:${p.id}`,
+    label: p.name || p.root,
+    description: p.root,
+    value: `${group} ${p.name} ${p.root}`,
+    selected: p.id === project?.id,
+    onSelect: () => {
+      setProjectId(p.id);
+      setOpen(null);
+    },
+  });
+  const projectGroups = recent
+    ? [
+        { id: "recent", label: T3_NEW_CHAT_TEXT.recent, items: recent.filter((p) => p.lastActiveAt).slice(0, RECENT_PROJECTS).map((p) => projectItem(p, "recent")) },
+        { id: "all", label: T3_NEW_CHAT_TEXT.allProjects, items: (t3Projects ?? []).map((p) => projectItem(p, "all")) },
+      ].filter((g) => g.items.length)
+    : [{ id: "projects", items: (t3Projects ?? []).map((p) => projectItem(p, "projects")) }];
+  const projectMenu = (trigger: ReactElement<Record<string, unknown>>) => (
+    <CmdkMenu
+      open={open === "project"}
+      onOpenChange={(next) => setOpen(next ? "project" : null)}
+      className="t3-project-menu"
+      trigger={trigger}
+      groups={projectGroups}
+    />
+  );
 
   return (
     <section id="composer-view">
+      {onPhone ? (
+        // On the phone the project is spelled out above the prompt, where a thumb reaches it.
+        projectMenu(
+          <button type="button" className="phone-project" aria-label={`${T3_NEW_CHAT_TEXT.project}: ${projectLabel}`}>
+            <FolderIcon />
+            <span className="phone-project-text">
+              <span className="phone-project-label">{T3_NEW_CHAT_TEXT.project}</span>
+              <span className="phone-project-name">{projectLabel}</span>
+            </span>
+            <span className="chev"><Chevron /></span>
+          </button>,
+        )
+      ) : null}
       <div id="composer-card">
         <div className="input-wrap">
           <textarea
@@ -116,40 +174,24 @@ export function T3NewChat() {
             }}
             onKeyDown={(e) => {
               if (isCtrlJ(e)) { e.preventDefault(); insertNewlineAtCaret(text, setText, taRef); return; }
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+              // A phone keyboard's return key makes a new line; the start button starts.
+              if (e.key === "Enter" && !e.shiftKey && !touchComposer) { e.preventDefault(); submit(); }
             }}
           />
         </div>
         <div className="status-row">
-          <HintTooltip label={T3_NEW_CHAT_TEXT.project}>
-            <span>
-              <CmdkMenu
-                open={open === "project"}
-                onOpenChange={(next) => setOpen(next ? "project" : null)}
-                className="t3-project-menu"
-                trigger={
+          {onPhone ? null : (
+            <HintTooltip label={T3_NEW_CHAT_TEXT.project}>
+              <span>
+                {projectMenu(
                   <button type="button" className="row-control cwd-trigger" aria-label={T3_NEW_CHAT_TEXT.project}>
                     <FolderIcon />
                     <span className="cwd-label">{projectLabel}</span>
-                  </button>
-                }
-                groups={[{
-                  id: "projects",
-                  items: (t3Projects ?? []).map((p) => ({
-                    id: p.id,
-                    label: p.name || p.root,
-                    description: p.root,
-                    value: `${p.name} ${p.root}`,
-                    selected: p.id === project?.id,
-                    onSelect: () => {
-                      setProjectId(p.id);
-                      setOpen(null);
-                    },
-                  })),
-                }]}
-              />
-            </span>
-          </HintTooltip>
+                  </button>,
+                )}
+              </span>
+            </HintTooltip>
+          )}
           <T3ModelControls
             selection={selection}
             catalog={t3Models}
@@ -198,6 +240,7 @@ export function T3NewChat() {
           <div className="status-row-spacer" />
           <button className="send" type="button" aria-label={T3_NEW_CHAT_TEXT.start} disabled={!canStart} onClick={submit}>
             {t3LaunchPending ? <PinwheelSpinner size={13} /> : <ArrowUp />}
+            {onPhone ? <span className="send-label">{T3_NEW_CHAT_TEXT.start}</span> : null}
           </button>
         </div>
       </div>
